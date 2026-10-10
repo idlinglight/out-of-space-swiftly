@@ -4,4 +4,5 @@ import os
 nonisolated enum Log {
     static let subsystem = "at.idling.out-of-space-swiftly"
     static let app = Logger(subsystem: subsystem, category: "app")
+    static let scan = Logger(subsystem: subsystem, category: "scan")
 }
