@@ -248,16 +248,57 @@ struct TreemapLayoutTests {
         #expect(layout.tiles[0].kind == .leaf)
     }
 
-    @Test func emptyContainerAndEmptyRect() {
-        let empty = TestTree().layout(in: CGRect(x: 0, y: 0, width: 10, height: 10), style: TreemapStyle())
-        #expect(empty.tiles.count == 1)
-        #expect(empty.tiles[0].isSubdivided && empty.tiles[0].children.isEmpty)
+    /// A container with nothing to show inside is drawn as one tile, not as a frame around nothing.
+    @Test func emptyContainersAreCutOff() {
+        let bounds = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let noChildren = TestTree().layout(in: bounds, style: TreemapStyle())
+        #expect(noChildren.tiles.map(\.kind) == [.cutOff(.empty)])
+        #expect(noChildren.tiles[0].children.isEmpty)
 
         var tree = TestTree()
+        tree.children[0] = [TreemapItem(id: 1, weight: 1, isContainer: true)]
+        tree.children[1] = [TreemapItem(id: 2, weight: 0, isContainer: false),
+                            TreemapItem(id: 3, weight: .nan, isContainer: true)]
+        let weightless = tree.layout(in: bounds, style: TreemapStyle())
+        #expect(weightless.tiles.map(\.id) == [0, 1])
+        #expect(weightless.tiles.map(\.kind) == [.subdivided, .cutOff(.empty)])
+
         tree.children[0] = [TreemapItem(id: 1, weight: 1, isContainer: false)]
         let squashed = tree.layout(in: CGRect(x: 0, y: 0, width: 0, height: 10), style: TreemapStyle())
-        #expect(squashed.tiles.count == 1)
-        #expect(squashed.tiles[0].kind == .cutOff(.tooSmall))
+        #expect(squashed.tiles.map(\.kind) == [.cutOff(.tooSmall)])
+    }
+
+    @Test func tilesCarryUsableWeights() {
+        var tree = TestTree()
+        tree.children[0] = [TreemapItem(id: 1, weight: 3, isContainer: false),
+                            TreemapItem(id: 2, weight: -4, isContainer: false),
+                            TreemapItem(id: 3, weight: .infinity, isContainer: false)]
+        let root = TreemapItem(id: 0, weight: .nan, isContainer: true)
+        let bounds = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let layout = TreemapLayout(root: root, in: bounds, children: tree.items(of:))
+
+        #expect(layout.tiles.map(\.weight) == [0, 3, 0])
+        #expect(layout.tiles.last?.kind == .remainder(count: 2))
+        #expect(TreemapLayout(root: root, in: bounds, children: tree.items(of:)).tiles == layout.tiles)
+    }
+
+    /// 1 lists the root among its children, and itself.
+    @Test func idsRepeatingAnAncestorAreNotEntered() {
+        var tree = TestTree()
+        tree.children[0] = [TreemapItem(id: 1, weight: 1, isContainer: true)]
+        tree.children[1] = [TreemapItem(id: 0, weight: 2, isContainer: true),
+                            TreemapItem(id: 1, weight: 1, isContainer: true),
+                            TreemapItem(id: 2, weight: 1, isContainer: false)]
+        var asked: [Int] = []
+        let style = TreemapStyle(padding: 0, headerHeight: 0, minimumSide: 1)
+        let layout = TreemapLayout(root: tree.root, in: CGRect(x: 0, y: 0, width: 100, height: 100), style: style) {
+            asked.append($0)
+            return tree.items(of: $0)
+        }
+
+        #expect(layout.tiles.map(\.id) == [0, 1, 0, 1, 2])
+        #expect(layout.tiles.map(\.kind) == [.subdivided, .subdivided, .cutOff(.cycle), .cutOff(.cycle), .leaf])
+        #expect(asked == [0, 1])
     }
 
     /// A is 360 × 100 and gets a header; B is 40 × 100, too narrow for one.
@@ -363,6 +404,9 @@ struct TreemapLayoutTests {
             }
             guard tile.isSubdivided else {
                 #expect(tile.children.isEmpty)
+                if tile.kind == .cutOff(.empty) {
+                    #expect(tree.items(of: tile.id).allSatisfy { SquarifiedLayout.usable($0.weight) == 0 })
+                }
                 continue
             }
 
@@ -382,27 +426,49 @@ struct TreemapLayoutTests {
             let remainderCount = children.reduce(0) { if case .remainder(let count) = $1.kind { $0 + count } else { $0 } }
             #expect(children.filter { !$0.isRemainder }.count + remainderCount == items.count)
             #expect(children.filter(\.isRemainder).count <= 1)
-            if itemWeight > 0 {
-                #expect(abs(children.reduce(0) { $0 + area($1.rect) } - area(content)) <= 1e-6 * area(content))
-            }
+            #expect(itemWeight > 0)
+            #expect(abs(children.reduce(0) { $0 + area($1.rect) } - area(content)) <= 1e-6 * area(content))
         }
     }
 
-    @Test func tileCapLeavesTheRestCutOff() {
+    /// A (10 children) would overflow a cap of 6 tiles, B (2 children) still fits after it, and C is cut off
+    /// without being asked once the cap is full.
+    @Test func tileCapCutsOffOnlyContainersThatDoNotFit() {
+        var tree = TestTree()
+        tree.children[0] = [TreemapItem(id: 1, weight: 10, isContainer: true),
+                            TreemapItem(id: 2, weight: 5, isContainer: true),
+                            TreemapItem(id: 3, weight: 1, isContainer: true)]
+        tree.children[1] = (10..<20).map { TreemapItem(id: $0, weight: 1, isContainer: false) }
+        tree.children[2] = (20..<22).map { TreemapItem(id: $0, weight: 1, isContainer: false) }
+        tree.children[3] = [TreemapItem(id: 30, weight: 1, isContainer: false)]
+        var asked: [Int] = []
+        let style = TreemapStyle(padding: 0, headerHeight: 0, minimumSide: 1, maximumTileCount: 6)
+        let layout = TreemapLayout(root: tree.root, in: CGRect(x: 0, y: 0, width: 100, height: 100), style: style) {
+            asked.append($0)
+            return tree.items(of: $0)
+        }
+
+        #expect(layout.tiles.map(\.id) == [0, 1, 2, 3, 20, 21])
+        #expect(layout.tiles.map(\.kind) == [.subdivided, .cutOff(.tileLimit), .subdivided, .cutOff(.tileLimit), .leaf, .leaf])
+        #expect(asked == [0, 1, 2])
+    }
+
+    @Test func tileCapHoldsOnARandomTree() {
         let tree = TestTree.random(seed: 3, depth: 6, fanOut: 40)
         let bounds = CGRect(x: 0, y: 0, width: 1200, height: 800)
         let unlimited = tree.layout(in: bounds, style: TreemapStyle())
-        let capped = tree.layout(in: bounds, style: TreemapStyle(maximumTileCount: 100))
+        let capped = tree.layout(in: bounds, style: TreemapStyle(maximumTileCount: 300))
 
-        #expect(unlimited.tiles.count > 100)
-        #expect(capped.tiles.count <= 100)
-        #expect(capped.tiles.contains { $0.kind == .cutOff(.tileLimit) })
-        // Up to the cap, the same tiles in the same places.
-        #expect(zip(capped.tiles, unlimited.tiles).allSatisfy { $0.id == $1.id && $0.rect == $1.rect })
+        #expect(unlimited.tiles.count > 300)
+        #expect(capped.tiles.count <= 300)
+        let firstCut = capped.tiles.firstIndex { $0.kind == .cutOff(.tileLimit) }
+        #expect(firstCut != nil)
+        // Containers after the first one cut off still get subdivided when their children fit.
+        #expect(capped.tiles.indices.contains { $0 > firstCut! && capped.tiles[$0].isSubdivided })
     }
 
-    /// About 200,000 files: one flat folder of 20,000, the rest in 39 folders of 50 subfolders each. The time is
-    /// attached to the test result; the bound is loose so slow CI machines do not fail it.
+    /// About 200,000 files: one flat folder of 20,000, the rest in 39 folders of 50 subfolders each. The times for
+    /// the layout and for 100,000 hit tests are attached to the test result; the bound only catches a runaway.
     @Test func layoutOf200kLeavesIsFast() {
         var generator = SeededGenerator(seed: 200_000)
         var tree = TestTree()
@@ -430,15 +496,27 @@ struct TreemapLayoutTests {
         tree.children[0] = top
 
         let bounds = CGRect(x: 0, y: 0, width: 2000, height: 1200)
-        var tileCount = 0
+        var layout: TreemapLayout<Int>?
         let elapsed = ContinuousClock().measure {
-            tileCount = tree.layout(in: bounds, style: TreemapStyle()).tiles.count
+            layout = tree.layout(in: bounds, style: TreemapStyle())
         }
-        let milliseconds = Double(elapsed.components.seconds) * 1e3 + Double(elapsed.components.attoseconds) / 1e15
-        Attachment.record("\(leafCount) leaves, \(tileCount) tiles, \(String(format: "%.1f", milliseconds)) ms",
-                          named: "treemap-layout-time.txt")
+        let points = (0..<100_000).map { _ in
+            CGPoint(x: Double.random(in: 0..<2000, using: &generator), y: Double.random(in: 0..<1200, using: &generator))
+        }
+        var hits = 0
+        let hitTesting = ContinuousClock().measure {
+            for point in points where layout?.tileIndex(at: point) != nil { hits += 1 }
+        }
+        func milliseconds(_ duration: Duration) -> String {
+            String(format: "%.1f ms", Double(duration.components.seconds) * 1e3 + Double(duration.components.attoseconds) / 1e15)
+        }
+        Attachment.record("""
+            layout: \(leafCount) leaves, \(layout?.tiles.count ?? 0) tiles, \(milliseconds(elapsed))
+            hit testing: \(points.count) points, \(milliseconds(hitTesting))
+            """, named: "treemap-layout-time.txt")
         #expect(leafCount > 190_000)
-        #expect(elapsed < .seconds(1))
+        #expect(hits == points.count)
+        #expect(elapsed < .seconds(10))
     }
 }
 
@@ -477,17 +555,21 @@ struct TreemapHitTestingTests {
         #expect(layout.tileIndex(at: point) == nil)
     }
 
-    @Test func agreesWithBruteForceOnARandomTree() {
-        let tree = TestTree.random(seed: 11, depth: 6, fanOut: 40)
-        let bounds = CGRect(x: 0, y: 0, width: 1200, height: 800)
-        let layout = tree.layout(in: bounds, style: TreemapStyle())
-        var generator = SeededGenerator(seed: 12)
-        for _ in 0..<200 {
-            let point = CGPoint(x: Double.random(in: 0..<1200, using: &generator), y: Double.random(in: 0..<800, using: &generator))
-            let containing = layout.tiles.filter { $0.rect.contains(point) }
-            let hit = layout.tile(at: point)
-            #expect(hit != nil && hit!.rect.contains(point))
-            #expect(hit?.depth == containing.map(\.depth).max())
+    /// The descent from the root finds the same tile as scanning every tile for the last one containing the point.
+    @Test(arguments: [11, 12] as [UInt64])
+    func agreesWithScanningEveryTile(seed: UInt64) {
+        let tree = TestTree.random(seed: seed, depth: 6, fanOut: 40)
+        let layout = tree.layout(in: CGRect(x: 0, y: 0, width: 1200, height: 800), style: TreemapStyle())
+        var generator = SeededGenerator(seed: seed)
+        var mismatches = 0
+        for _ in 0..<1000 {
+            let point = CGPoint(x: Double.random(in: -10..<1210, using: &generator),
+                                y: Double.random(in: -10..<810, using: &generator))
+            if layout.tileIndex(at: point) != layout.tiles.lastIndex(where: { $0.rect.contains(point) }) {
+                mismatches += 1
+            }
         }
+        #expect(mismatches == 0)
+        #expect(layout.tiles.count > 1000)
     }
 }

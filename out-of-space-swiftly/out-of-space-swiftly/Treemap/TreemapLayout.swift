@@ -22,7 +22,8 @@ nonisolated struct TreemapStyle: Sendable, Equatable {
     var minimumSide: CGFloat = 4
     /// Containers at this depth are not subdivided (the root is depth 0).
     var maximumDepth = Int.max
-    /// Once subdividing a container would make more tiles than this, no further container is subdivided.
+    /// A container whose children would take the tile count past this is not subdivided; later containers with
+    /// fewer children still are.
     var maximumTileCount: Int?
 
     /// The header band, if one fits, and the rect left for children inside a container's `rect`.
@@ -44,6 +45,7 @@ nonisolated struct TreemapTile<ID: Hashable & Sendable>: Sendable, Equatable {
     var rect: CGRect
     /// 0 for the root, 1 for its children, and so on.
     var depth: Int
+    /// The weight as the layout used it: negative and non-finite weights are zero.
     var weight: Double
     var kind: Kind
     /// Index of the parent in `TreemapLayout.tiles`; nil for the root.
@@ -68,7 +70,13 @@ nonisolated struct TreemapTile<ID: Hashable & Sendable>: Sendable, Equatable {
         /// The padded content is narrower than `TreemapStyle.minimumSide`.
         case tooSmall
         case depthLimit
+        /// Its children would take the tile count past `TreemapStyle.maximumTileCount`. Once the count is there,
+        /// containers are cut off without asking for their children.
         case tileLimit
+        /// It has no children, or they all weigh nothing.
+        case empty
+        /// It has the id of one of its ancestors; descending would go round in circles.
+        case cycle
     }
 
     var isContainer: Bool {
@@ -89,46 +97,54 @@ nonisolated struct TreemapLayout<ID: Hashable & Sendable>: Sendable {
     let tiles: [TreemapTile<ID>]
 
     /// Lays out `root` in `rect`. The root fills `rect` without padding or header; its children fill the whole of it.
-    /// Containers are subdivided breadth first, so a tile cap leaves out the deepest detail.
+    /// Containers are subdivided breadth first, so a tile cap leaves out the deepest detail first.
     init(root: TreemapItem<ID>, in rect: CGRect, style: TreemapStyle = TreemapStyle(),
          children: (ID) -> [TreemapItem<ID>]) {
         // Containers are appended as `.subdivided` and settled when the loop reaches them.
-        var tiles = [TreemapTile(id: root.id, rect: rect.standardized, depth: 0, weight: root.weight,
+        var tiles = [TreemapTile(id: root.id, rect: rect.standardized, depth: 0,
+                                 weight: SquarifiedLayout.usable(root.weight),
                                  kind: root.isContainer ? .subdivided : .leaf, parent: nil)]
-        var tileLimitReached = false
         var index = 0
         while index < tiles.count {
             defer { index += 1 }
             guard tiles[index].kind == .subdivided else { continue }
             let tile = tiles[index]
             let (header, content) = index == 0 ? (nil, tile.rect) : style.frame(of: tile.rect)
-            guard tile.depth < style.maximumDepth else {
-                tiles[index].kind = .cutOff(.depthLimit)
-                continue
+
+            var reason: TreemapTile<ID>.CutOffReason?
+            if Self.repeatsAncestor(index, in: tiles) {
+                reason = .cycle
+            } else if tile.depth >= style.maximumDepth {
+                reason = .depthLimit
+            } else if !(content.width > 0 && content.height > 0 && min(content.width, content.height) >= style.minimumSide) {
+                reason = .tooSmall
+            } else if let cap = style.maximumTileCount, tiles.count >= cap {
+                reason = .tileLimit // not even one more tile would fit
             }
-            guard content.width > 0, content.height > 0,
-                  content.width >= style.minimumSide, content.height >= style.minimumSide else {
-                tiles[index].kind = .cutOff(.tooSmall)
-                continue
-            }
-            guard !tileLimitReached else {
-                tiles[index].kind = .cutOff(.tileLimit)
+            if let reason {
+                tiles[index].kind = .cutOff(reason)
                 continue
             }
 
             let items = children(tile.id)
             let placement = ChildPlacement(weights: items.map { $0.weight }, in: content, minimumSide: style.minimumSide)
-            if let cap = style.maximumTileCount, tiles.count + placement.rects.count > cap {
-                tiles[index].kind = .cutOff(.tileLimit)
-                tileLimitReached = true
+            if !placement.hasWeight {
+                reason = .empty
+            } else if let cap = style.maximumTileCount, tiles.count + placement.rects.count > cap {
+                reason = .tileLimit // this container only: a later one with fewer children may still fit
+            }
+            if let reason {
+                tiles[index].kind = .cutOff(reason)
                 continue
             }
+
             tiles[index].header = header
             tiles[index].children = tiles.count..<(tiles.count + placement.rects.count)
             for (child, rect) in placement.rects {
                 if let child {
                     let item = items[child]
-                    tiles.append(TreemapTile(id: item.id, rect: rect, depth: tile.depth + 1, weight: item.weight,
+                    tiles.append(TreemapTile(id: item.id, rect: rect, depth: tile.depth + 1,
+                                             weight: SquarifiedLayout.usable(item.weight),
                                              kind: item.isContainer ? .subdivided : .leaf, parent: index))
                 } else {
                     tiles.append(TreemapTile(id: tile.id, rect: rect, depth: tile.depth + 1,
@@ -143,13 +159,31 @@ nonisolated struct TreemapLayout<ID: Hashable & Sendable>: Sendable {
     /// Index of the deepest tile containing `point`, nil outside the root. Edges are half-open as in
     /// `CGRect.contains`: a point on the edge two siblings share belongs to the right or lower one.
     func tileIndex(at point: CGPoint) -> Int? {
-        // Children follow their parents and siblings do not overlap, so the last hit is the deepest. A spatial index
-        // can replace this scan behind the same signature.
-        tiles.lastIndex { $0.rect.contains(point) }
+        // Siblings do not overlap, so one path leads down from the root and the cost is depth times siblings, not the
+        // number of tiles. Siblings are tried from the last, as drawing order would settle a rounding overlap.
+        guard !tiles.isEmpty, tiles[0].rect.contains(point) else { return nil }
+        var index = 0
+        descending: while true {
+            for child in tiles[index].children.reversed() where tiles[child].rect.contains(point) {
+                index = child
+                continue descending
+            }
+            return index
+        }
     }
 
     func tile(at point: CGPoint) -> TreemapTile<ID>? {
         tileIndex(at: point).map { tiles[$0] }
+    }
+
+    /// Whether the tile at `index` has the id of one of its ancestors.
+    private static func repeatsAncestor(_ index: Int, in tiles: [TreemapTile<ID>]) -> Bool {
+        var ancestor = tiles[index].parent
+        while let current = ancestor {
+            if tiles[current].id == tiles[index].id { return true }
+            ancestor = tiles[current].parent
+        }
+        return false
     }
 }
 
@@ -160,11 +194,14 @@ private nonisolated struct ChildPlacement {
     var rects: [(child: Int?, rect: CGRect)] = []
     var remainderWeight = 0.0
     var remainderCount = 0
+    /// Whether any child weighs something.
+    var hasWeight: Bool
 
     init(weights: [Double], in content: CGRect, minimumSide: CGFloat) {
         let weights = weights.map(SquarifiedLayout.usable)
         let total = weights.reduce(0, +)
         let area = Double(content.width * content.height)
+        hasWeight = total > 0
 
         // A child smaller than a square of the minimum side can never be drawn: it goes straight into the
         // remainder, and only the others need sorting.
