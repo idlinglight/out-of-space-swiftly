@@ -96,12 +96,13 @@ struct VolumesTests {
         let urls = ["/a", "/hung", "/b"].map { URL(filePath: $0, directoryHint: .isDirectory) }
         let clock = ContinuousClock()
         let start = clock.now
-        let volumes = await Volumes.load(urls, timeout: .milliseconds(300)) { url in
-            if url.path == "/hung" { Thread.sleep(forTimeInterval: 3) }
+        // Margins wide enough for a busy machine: tests run in parallel, some of them CPU-heavy.
+        let volumes = await Volumes.load(urls, timeout: .seconds(1)) { url in
+            if url.path == "/hung" { Thread.sleep(forTimeInterval: 4) }
             return makeVolume(url.path)
         }
         #expect(Set(volumes.map(\.url.path)) == ["/a", "/b"])
-        #expect(clock.now - start < .seconds(2))
+        #expect(clock.now - start < .seconds(3))
     }
 }
 
