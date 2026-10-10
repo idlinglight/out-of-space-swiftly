@@ -3,13 +3,21 @@ import Foundation
 import Testing
 @testable import out_of_space_swiftly
 
+extension ScanOptions {
+    /// Options for scanning fixtures: no protected paths, so not even the real `~/Library` folders' own
+    /// metadata is looked up.
+    static var fixture: ScanOptions {
+        var options = ScanOptions()
+        options.protectedPaths = []
+        return options
+    }
+}
+
 /// Scans of generated trees. Every test builds its own tree in a temporary directory; nothing else on the
 /// disk is read.
 struct ScanTests {
-    private func scan(_ fixture: FixtureTree, options: ScanOptions = ScanOptions()) async -> ScanResult {
-        var options = options
-        options.protectedPaths = options.protectedPaths.filter { $0.hasPrefix(fixture.root.path) }
-        return await Scan(root: fixture.root, options: options).run()
+    private func scan(_ fixture: FixtureTree, options: ScanOptions = .fixture) async -> ScanResult {
+        await Scan(root: fixture.root, options: options).run()
     }
 
     private func find(_ path: String, in tree: ScanTree) -> NodeID? {
@@ -149,7 +157,7 @@ struct ScanTests {
         let fixture = try FixtureTree()
         try fixture.file("Library/Containers/com.example.app/Data/big.bin", size: 200_000)
         try fixture.file("Library/Preferences/settings.plist", size: 1_000)
-        var options = ScanOptions()
+        var options = ScanOptions.fixture
         options.protectedPaths = [fixture.url("Library/Containers").path]
         let tree = await scan(fixture, options: options).tree
 
@@ -162,7 +170,7 @@ struct ScanTests {
     @Test func cancellingBeforeTheStartReturnsAtOnce() async throws {
         let fixture = try FixtureTree()
         try fixture.file("a/b.bin", size: 1_000)
-        let scan = Scan(root: fixture.root)
+        let scan = Scan(root: fixture.root, options: .fixture)
         scan.cancel()
         let result = await scan.run()
         #expect(result.wasCancelled)
@@ -176,7 +184,7 @@ struct ScanTests {
                 try fixture.file("d\(directory)/sub/f\(file).bin", size: 100)
             }
         }
-        let scan = Scan(root: fixture.root)
+        let scan = Scan(root: fixture.root, options: .fixture)
         let task = Task { await scan.run() }
         try await Task.sleep(for: .milliseconds(5))
         task.cancel()
@@ -187,12 +195,21 @@ struct ScanTests {
         }
     }
 
+    @Test func aThreadCountBelowOneStillScans() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("a.bin", size: 1_000)
+        var options = ScanOptions.fixture
+        options.threadCount = 0
+        let result = await scan(fixture, options: options)
+        #expect(result.progress.files == 1)
+    }
+
     @Test func progressIsReportedAndTheStreamEnds() async throws {
         let fixture = try FixtureTree()
         for index in 0 ..< 50 {
             try fixture.file("dir\(index % 5)/file\(index).bin", size: 2_000)
         }
-        var options = ScanOptions()
+        var options = ScanOptions.fixture
         options.progressInterval = .milliseconds(1)
         let scan = Scan(root: fixture.root, options: options)
         let collector = Task {

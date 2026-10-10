@@ -41,7 +41,7 @@ nonisolated final class ScanTree: @unchecked Sendable {
         /// Another link to this file, or another member of its full-clone set, was counted already.
         static let duplicate = Flags(rawValue: 1 << 8)
         static let firmlink = Flags(rawValue: 1 << 9)
-        /// Reading the directory failed or stopped early; see `error(of:)`.
+        /// Reading this item failed (a directory: it could not be read, or not completely); see `error(of:)`.
         static let failed = Flags(rawValue: 1 << 10)
         /// Reading the directory took longer than the scan's patience.
         static let slow = Flags(rawValue: 1 << 11)

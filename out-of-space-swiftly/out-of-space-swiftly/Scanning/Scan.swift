@@ -91,8 +91,10 @@ nonisolated final class Scan: Sendable {
             engine.cancel()
         }
         reporter.cancel()
-        let tree = engine.finish()
+        await reporter.value
+        // Before sealing: this last look also records directories that just became slow.
         let final = engine.progress()
+        let tree = engine.finish()
         progressContinuation.yield(final)
         progressContinuation.finish()
         let duration = ContinuousClock.now - start
@@ -129,14 +131,14 @@ private nonisolated struct FileKey: Hashable {
 }
 
 
-/// The shared state of one scan. `queue` holds the work stack and the threads' coming and going; changes to
-/// it are made with `wakeUp` locked and broadcast, so a thread about to sleep cannot miss new work.
-/// `builder` holds the tree and the sets that remove duplicates.
-private nonisolated final class ScanEngine: Sendable {
+/// The shared state of one scan. `queueState` (the work stack and the threads' coming and going) is only
+/// touched with `wakeUp` locked, and every change is broadcast, so a thread about to sleep cannot miss new
+/// work; hence `@unchecked Sendable`. `builder` holds the tree and the sets that remove duplicates.
+private nonisolated final class ScanEngine: @unchecked Sendable {
     let rootPath: String
     let options: ScanOptions
 
-    private struct QueueState: Sendable {
+    private struct QueueState {
         var stack: [WorkItem] = []
         var busy = 0
         var threads = 0
@@ -160,8 +162,8 @@ private nonisolated final class ScanEngine: Sendable {
         var since: ContinuousClock.Instant
     }
 
-    private let queue = Mutex(QueueState())
     private let wakeUp = NSCondition()
+    private var queueState = QueueState()
     private let builder: Mutex<Builder>
     private let inFlight = Mutex<[Int: InFlight]>([:])
     private let slowNodes = Mutex<Set<NodeID>>([])
@@ -189,12 +191,18 @@ private nonisolated final class ScanEngine: Sendable {
         builder = Mutex(state)
     }
 
-    var isCancelled: Bool { queue.withLock { $0.cancelled } }
+    var isCancelled: Bool {
+        wakeUp.lock()
+        defer { wakeUp.unlock() }
+        return queueState.cancelled
+    }
 
     func cancel() {
         var waiter: CheckedContinuation<Void, Never>?
         changeQueue { state in
             state.cancelled = true
+            // Queued items hold their parents' open directories; let them go now.
+            state.stack = []
             waiter = state.waiter
             state.waiter = nil
         }
@@ -225,11 +233,12 @@ private nonisolated final class ScanEngine: Sendable {
 
     func progress() -> ScanProgress {
         let now = ContinuousClock.now
-        let current = inFlight.withLock { $0.values.sorted { $0.since > $1.since } }
+        let current = inFlight.withLock { Array($0.values) }
+        let newest = current.max { $0.since < $1.since }
         let slow = current.filter { now - $0.since > options.slowAfter }.map(\.node)
         if !slow.isEmpty { slowNodes.withLock { $0.formUnion(slow) } }
         let paths = builder.withLock { state in
-            (current.first.map { state.tree.path(of: $0.node) }, slow.map { state.tree.path(of: $0) })
+            (newest.map { state.tree.path(of: $0.node) }, slow.map { state.tree.path(of: $0) })
         }
         return ScanProgress(files: files.load(ordering: .relaxed), directories: directories.load(ordering: .relaxed),
                             bytes: bytes.load(ordering: .relaxed), failures: failures.load(ordering: .relaxed),
@@ -240,23 +249,24 @@ private nonisolated final class ScanEngine: Sendable {
 
     private func changeQueue(_ change: (inout QueueState) -> Void) {
         wakeUp.lock()
-        queue.withLock { change(&$0) }
+        change(&queueState)
         wakeUp.broadcast()
         wakeUp.unlock()
     }
 
     private func runPass(_ first: WorkItem) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let threadCount = max(1, options.threadCount)
             var started = false
             changeQueue { state in
                 guard !state.cancelled else { return }
                 state.stack = [first]
-                state.threads = options.threadCount
+                state.threads = threadCount
                 state.waiter = continuation
                 started = true
             }
             guard started else { return continuation.resume() }
-            for index in 0 ..< options.threadCount {
+            for index in 0 ..< threadCount {
                 let thread = Thread { [self] in work(index) }
                 thread.name = "Scan \(index + 1)"
                 thread.qualityOfService = .utility
@@ -289,22 +299,15 @@ private nonisolated final class ScanEngine: Sendable {
     private func nextItem() -> WorkItem? {
         wakeUp.lock()
         defer { wakeUp.unlock() }
-        while true {
-            enum Next { case item(WorkItem), done, wait }
-            let next = queue.withLock { state -> Next in
-                if state.cancelled { return .done }
-                if let item = state.stack.popLast() {
-                    state.busy += 1
-                    return .item(item)
-                }
-                return state.busy == 0 ? .done : .wait
+        while !queueState.cancelled {
+            if let item = queueState.stack.popLast() {
+                queueState.busy += 1
+                return item
             }
-            switch next {
-            case .item(let item): return item
-            case .done: return nil
-            case .wait: wakeUp.wait()
-            }
+            if queueState.busy == 0 { return nil }
+            wakeUp.wait()
         }
+        return nil
     }
 
     // MARK: Reading one directory
@@ -353,6 +356,7 @@ private nonisolated final class ScanEngine: Sendable {
         }
 
         var entered: [(id: NodeID, name: String)] = []
+        var hadEntryErrors = false
         var fileCount = 0
         var byteCount: Int64 = 0
         let appended = builder.withLock { state -> Bool in
@@ -376,6 +380,7 @@ private nonisolated final class ScanEngine: Sendable {
             }
             if let group { kept.append(group) }
 
+            hadEntryErrors = !keptErrors.isEmpty
             let first = state.tree.appendChildren(of: item.node, kept)
             for (offset, error) in keptErrors { state.tree.setError(error, for: first + NodeID(offset)) }
             if code != 0 { state.tree.setError(code, for: item.node) }
@@ -395,13 +400,15 @@ private nonisolated final class ScanEngine: Sendable {
         files.add(fileCount, ordering: .relaxed)
         directories.add(1, ordering: .relaxed)
         bytes.add(byteCount, ordering: .relaxed)
-        if code != 0 || !entryErrors.isEmpty { failures.add(1, ordering: .relaxed) }
+        if code != 0 || hadEntryErrors { failures.add(1, ordering: .relaxed) }
 
         guard !entered.isEmpty else { return }
         let items = entered.reversed().map { child in
             WorkItem(node: child.id, name: child.name, parent: handle, dropsVisited: item.dropsVisited)
         }
-        changeQueue { $0.stack.append(contentsOf: items) }
+        changeQueue { state in
+            if !state.cancelled { state.stack.append(contentsOf: items) }
+        }
     }
 
     /// Counts a file with several links once per inode, and a set of full clones once per clone ID.

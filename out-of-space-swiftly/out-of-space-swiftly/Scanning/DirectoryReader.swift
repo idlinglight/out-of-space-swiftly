@@ -59,7 +59,11 @@ nonisolated final class DirectoryReader {
             let count = withUnsafeMutablePointer(to: &attributes) { list in
                 getattrlistbulk(descriptor, list, buffer.baseAddress, buffer.count, options)
             }
-            if count < 0 { return errno }
+            if count < 0 {
+                let code = errno
+                if code == EINTR { continue }
+                return code
+            }
             if count == 0 { return 0 }
             var entry = UnsafeRawPointer(buffer.baseAddress!)
             for _ in 0 ..< count {
