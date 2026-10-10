@@ -125,7 +125,8 @@ private struct TreemapTiles: View, Equatable {
     }
 }
 
-/// Outlines for the hovered and the selected item (or the nearest tile that stands for it).
+/// Outlines for the hovered and the selected item: solid around the item's own tile, dashed around the tile
+/// standing in for an item too small to have one.
 private struct TreemapHighlight: View {
     let drawing: TreemapDrawing
     let tree: ScanTree
@@ -135,24 +136,24 @@ private struct TreemapHighlight: View {
     var body: some View {
         Canvas { context, size in
             drawing.scale(&context, to: size)
-            if let rect = rect(for: hovered), hovered != selection {
-                context.stroke(Path(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 3),
-                               with: .color(.primary.opacity(0.7)), lineWidth: 1)
+            if let hovered, hovered != selection, let outline = drawing.outline(for: hovered, in: tree) {
+                context.stroke(Path(roundedRect: Self.visible(outline.rect).insetBy(dx: 0.5, dy: 0.5), cornerRadius: 3),
+                               with: .color(.primary.opacity(0.7)),
+                               style: StrokeStyle(lineWidth: 1, dash: outline.isExact ? [] : [3, 2]))
             }
-            if let rect = rect(for: selection) {
-                context.stroke(Path(roundedRect: rect.insetBy(dx: 1, dy: 1), cornerRadius: 3),
-                               with: .color(.accentColor), lineWidth: 2)
+            if let selection, let outline = drawing.outline(for: selection, in: tree) {
+                context.stroke(Path(roundedRect: Self.visible(outline.rect).insetBy(dx: 1, dy: 1), cornerRadius: 3),
+                               with: .color(.accentColor),
+                               style: StrokeStyle(lineWidth: 2, dash: outline.isExact ? [] : [5, 3]))
             }
         }
         .allowsHitTesting(false)
     }
 
-    private func rect(for id: NodeID?) -> CGRect? {
-        guard let id else { return nil }
-        for ancestor in tree.lineage(of: id).reversed() {
-            if let index = drawing.tileIndex[ancestor] { return drawing.layout.tiles[index].rect }
-        }
-        return nil
+    /// A tile a few points small still gets an outline one can see, centered on where it is.
+    private static func visible(_ rect: CGRect) -> CGRect {
+        let side: CGFloat = 12
+        return rect.insetBy(dx: min(0, (rect.width - side) / 2), dy: min(0, (rect.height - side) / 2))
     }
 }
 
@@ -177,6 +178,8 @@ struct TreemapDrawing {
     /// The first tile of each node; remainder tiles carry their container's id and are not listed. Folders
     /// folded into a chain point to the chain's tile.
     let tileIndex: [NodeID: Int]
+    /// The "smaller items" tile of each folder that has one, by the folder's id.
+    let remainderIndex: [NodeID: Int]
 
     /// Fits the drawing to the canvas while the canvas is being resized and the layout not yet redone.
     func scale(_ context: inout GraphicsContext, to size: CGSize) {
@@ -197,8 +200,10 @@ struct TreemapDrawing {
             }
         }
         var index: [NodeID: Int] = [:]
+        var remainders: [NodeID: Int] = [:]
         let styles = layout.tiles.enumerated().map { offset, tile in
             if case .remainder(let count) = tile.kind {
+                remainders[tile.id] = offset
                 return TileStyle(fill: TreemapPalette.remainder, label: "\(count.formatted()) smaller items",
                                  detail: ByteCount.text(Int64(tile.weight)), showsLabel: true)
             }
@@ -219,6 +224,25 @@ struct TreemapDrawing {
         self.layout = layout
         self.styles = styles
         tileIndex = index
+        remainderIndex = remainders
+    }
+
+    /// Where to outline an item: its own tile (exact), or else the tile standing in for it, which is the
+    /// "smaller items" tile it went into or a folder drawn as one block around it. Nil outside the zoom level,
+    /// and for an item with no area anywhere (the whole view would be no help).
+    func outline(for id: NodeID, in tree: ScanTree) -> (rect: CGRect, isExact: Bool)? {
+        var current = id
+        while true {
+            if let index = tileIndex[current] {
+                if index == 0, current != id { return nil }
+                return (layout.tiles[index].rect, current == id)
+            }
+            guard let parent = tree.parent(of: current) else { return nil }
+            if let index = remainderIndex[parent], !layout.tiles[index].rect.isEmpty {
+                return (layout.tiles[index].rect, false)
+            }
+            current = parent
+        }
     }
 
     /// Follows folders that hold nothing but one folder, so the treemap spends no header on each of them.
