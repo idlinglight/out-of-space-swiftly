@@ -103,10 +103,15 @@ private struct ItemActions: View {
 struct ItemMenu: View {
     let model: ScanWindowModel
     let id: NodeID
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         if model.tree?.isContainer(id) == true {
             Button("Zoom In") { model.zoom(into: id) }
+            if let path = model.tree?.path(of: id) {
+                // A window of its own scans the folder again, independently (ADR-0003).
+                Button("Open in New Window") { openWindow(value: ScanTarget(path: path)) }
+            }
         } else {
             Button("Open") { model.open(id) }
         }

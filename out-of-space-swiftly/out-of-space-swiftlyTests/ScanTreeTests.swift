@@ -25,6 +25,50 @@ struct ScanTreeTests {
         #expect(tree.children(of: tree.root).map { tree.name(of: $0) } == ["b", "a"])
     }
 
+    @Test func removingTheLastItemLeavesNoContainer() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("outer/inner/only.bin", size: 5_000)
+        let tree = await scan(fixture.root)
+        let outer = try #require(tree.node(atRelativePath: "outer"))
+        let inner = try #require(tree.node(atRelativePath: "outer/inner"))
+        #expect(tree.isContainer(outer))
+
+        tree.remove(inner)
+
+        #expect(!tree.isContainer(outer))
+        #expect(tree.size(of: tree.root) == 0)
+    }
+
+    @Test func refreshingOneLevelMatchesAFullScan() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("kept/deep/a.bin", size: 70_000)
+        try fixture.file("gone/b.bin", size: 30_000)
+        try fixture.file("top.bin", size: 10_000)
+        let tree = await scan(fixture.root)
+        let keptDeep = try #require(tree.node(atRelativePath: "kept/deep"))
+
+        try FileManager.default.removeItem(at: fixture.url("gone"))
+        try fixture.file("new/c.bin", size: 120_000)
+        try fixture.file("added.bin", size: 4_000)
+        var options = ScanOptions.fixture
+        options.descends = false
+        let listing = await Scan(root: fixture.root, options: options).run().tree
+        #expect(listing.node(atRelativePath: "new/c.bin") == nil)
+        let newFolder = await scan(fixture.url("new"))
+        tree.refresh(tree.root, listing: listing, subtrees: ["new": newFolder])
+        let fresh = await scan(fixture.root)
+
+        #expect(tree.size(of: tree.root) == fresh.size(of: fresh.root))
+        #expect(tree.node(tree.root).descendantCount == fresh.node(fresh.root).descendantCount)
+        #expect(tree.children(of: tree.root).map { tree.name(of: $0) } == fresh.children(of: fresh.root).map { fresh.name(of: $0) })
+        #expect(tree.node(atRelativePath: "gone") == nil)
+        #expect(tree.node(atRelativePath: "kept/deep") == keptDeep, "the subtree below a kept folder keeps its IDs")
+        let c = try #require(tree.node(atRelativePath: "new/c.bin"))
+        #expect(tree.path(of: c) == fixture.url("new/c.bin").path)
+        let kept = try #require(tree.node(atRelativePath: "kept"))
+        #expect(tree.parent(of: keptDeep) == kept)
+    }
+
     @Test func graftingARescanMatchesAFullScan() async throws {
         let fixture = try FixtureTree()
         try fixture.file("docs/one.bin", size: 40_000)

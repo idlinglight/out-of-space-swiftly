@@ -57,15 +57,19 @@ final class ScanWindowModel {
         var used: Int64
     }
 
-    /// Folders changed on disk since the scan, rescanned in the background (see `+Refresh`).
+    /// Folders changed on disk are being brought up to date in the background (see `+Refresh`).
     private(set) var isRefreshing = false
 
     @ObservationIgnored private var scan: Scan?
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored var watchTask: Task<Void, Never>?
+    /// Waits for a quiet moment after the last change; replaced by every new change.
+    @ObservationIgnored var debounceTask: Task<Void, Never>?
+    /// The refresh in progress. New changes never cancel it; they wait for the next one.
     @ObservationIgnored var refreshTask: Task<Void, Never>?
-    /// Changed folders (relative to the root, "" for the root itself) waiting to be rescanned.
-    @ObservationIgnored var pendingChanges: Set<String> = []
+    /// Changed folders (relative to the root, "" for the root itself) waiting for a refresh, and whether
+    /// everything below them must be scanned again (true) or one level suffices (false).
+    @ObservationIgnored var pendingChanges: [String: Bool] = [:]
 
     var isScanning: Bool { phase == .scanning }
 
@@ -86,6 +90,10 @@ final class ScanWindowModel {
         progress = ScanProgress()
         selection = nil
         hovered = nil
+        pendingTrash = nil
+        volumeUsage = nil
+        // Watching from the start catches what changes while the scan runs; it is caught up on afterwards.
+        watch(target)
         let scan = Scan(root: target.url)
         self.scan = scan
         scanTask = Task { [weak self] in
@@ -121,15 +129,16 @@ final class ScanWindowModel {
         phase = .finished
         scan = nil
         scanTask = nil
-        if !result.wasCancelled, let target {
-            watch(target)
-            loadVolumeUsage(for: target)
+        guard !result.wasCancelled, let target else {
+            stopWatching()
+            return
         }
+        loadVolumeUsage(for: target)
+        refreshIfPending()
     }
 
     /// Looks up whether the scan root is a volume's root and, if so, how much that volume uses.
     private func loadVolumeUsage(for target: ScanTarget) {
-        volumeUsage = nil
         Task { [weak self] in
             let usage = await Task.detached(priority: .utility) { () -> VolumeUsage? in
                 guard let volume = try? Volumes.volume(containing: target.url),
@@ -149,37 +158,32 @@ final class ScanWindowModel {
 
     func stopWatching() {
         watchTask?.cancel()
+        debounceTask?.cancel()
         refreshTask?.cancel()
         watchTask = nil
+        debounceTask = nil
         refreshTask = nil
-        pendingChanges = []
+        pendingChanges = [:]
         isRefreshing = false
     }
 
-    /// Puts a tree from a background rescan in place, keeping zoom and selection where their paths still exist.
-    func replaceTree(_ apply: (ScanTree) -> Void) {
-        guard let tree else { return }
-        let zoomPath = tree.relativePath(of: zoom)
-        let selectionPath = selection.map { tree.relativePath(of: $0) }
-        apply(tree)
+    /// Changes the tree, in place or for a new one, keeping zoom and selection where their paths still
+    /// exist. IDs may change, so nothing waiting on an old ID (such as a Trash confirmation) survives.
+    func updateTree(_ change: (ScanTree) -> ScanTree) {
+        guard let current = tree else { return }
+        let zoomPath = current.relativePath(of: zoom)
+        let selectionPath = selection.map { current.relativePath(of: $0) }
+        let updated = change(current)
+        tree = updated
         treeVersion += 1
-        zoom = Self.nearest(zoomPath, in: tree)
-        selection = selectionPath.flatMap { tree.node(atRelativePath: $0) }
+        zoom = Self.nearest(zoomPath, in: updated)
+        selection = selectionPath.flatMap { updated.node(atRelativePath: $0) }
         hovered = nil
+        pendingTrash = nil
     }
 
     func setRefreshing(_ refreshing: Bool) {
         isRefreshing = refreshing
-    }
-
-    func setTree(_ newTree: ScanTree) {
-        let zoomPath = tree.map { $0.relativePath(of: zoom) } ?? ""
-        let selectionPath = tree.flatMap { tree in selection.map { tree.relativePath(of: $0) } }
-        tree = newTree
-        treeVersion += 1
-        zoom = Self.nearest(zoomPath, in: newTree)
-        selection = selectionPath.flatMap { newTree.node(atRelativePath: $0) }
-        hovered = nil
     }
 
     /// The node at `path`, or its nearest ancestor that is still a container.
@@ -253,6 +257,8 @@ final class ScanWindowModel {
             if let selection, tree.lineage(of: selection).contains(id) { self.selection = nil }
             hovered = nil
             if tree.lineage(of: zoom).contains(id) { zoom = tree.parent(of: id) ?? tree.root }
+            // A folder whose last item went to the Trash has nothing left to show.
+            while !tree.isContainer(zoom), let parent = tree.parent(of: zoom) { zoom = parent }
         } catch {
             problem = "“\(tree.name(of: id))” could not be moved to the Trash: \(error.localizedDescription)"
         }

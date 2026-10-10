@@ -105,10 +105,17 @@ nonisolated final class ScanTree: @unchecked Sendable {
     func parent(of id: NodeID) -> NodeID? { id == root ? nil : nodes[Int(id)].parent }
     func error(of id: NodeID) -> Int32? { errors[id] }
 
-    /// Whether the node can contain others (a directory that was entered, or a group).
+    /// Whether the node holds others: a directory that was entered, or a group, with children left.
     func isContainer(_ id: NodeID) -> Bool {
         let node = nodes[Int(id)]
-        return (node.kind == .directory || node.kind == .group) && node.childCount > 0
+        guard (node.kind == .directory || node.kind == .group) && node.childCount > 0 else { return false }
+        return !hasRemovals || !children(of: id).isEmpty
+    }
+
+    /// The indices of a node's child block, removed children included.
+    private func childRange(of id: NodeID) -> Range<Int> {
+        let node = nodes[Int(id)]
+        return Int(node.firstChild) ..< Int(node.firstChild) + Int(node.childCount)
     }
 
     /// The node's children, largest first once the tree is finished; in reading order before. Removed
@@ -186,6 +193,10 @@ nonisolated final class ScanTree: @unchecked Sendable {
     /// finished; its root stands for `target`, which keeps its name and place. The old nodes stay in the
     /// arrays, unreachable; IDs below `target` change.
     func graft(_ subtree: ScanTree, at target: NodeID) {
+        graft(subtree, at: target, propagates: true)
+    }
+
+    private func graft(_ subtree: ScanTree, at target: NodeID, propagates: Bool) {
         precondition(sortedChildren.count == nodes.count && subtree.sortedChildren.count == subtree.nodes.count,
                      "both trees must be finished")
         let base = NodeID(nodes.count) - 1
@@ -211,12 +222,84 @@ nonisolated final class ScanTree: @unchecked Sendable {
         nodes[Int(target)].descendantCount = replacement.descendantCount
         nodes[Int(target)].flags = replacement.flags.union(old.flags.intersection([.firmlink]))
 
-        let sizeChange = replacement.size - old.size
-        let countChange = replacement.descendantCount - old.descendantCount
-        var current = target
+        if propagates {
+            propagate(from: target, size: replacement.size - old.size, count: replacement.descendantCount - old.descendantCount)
+        }
+    }
+
+    /// Brings one directory up to date from `listing`, a finished one-level scan of it. Subdirectories that are
+    /// still the same directory (name and file ID) keep their subtree; new ones take theirs from `subtrees`, by
+    /// name; groups the scanner made up are kept; everything else comes from the listing. The directory's
+    /// children get new IDs; the subtrees below kept subdirectories keep theirs.
+    func refresh(_ target: NodeID, listing: ScanTree, subtrees: [String: ScanTree]) {
+        precondition(sortedChildren.count == nodes.count && listing.sortedChildren.count == listing.nodes.count,
+                     "both trees must be finished")
+        let old = nodes[Int(target)]
+        var kept: [String: NodeID] = [:]
+        var groups: [NodeID] = []
+        for child in childRange(of: target) where !nodes[child].flags.contains(.removed) {
+            if nodes[child].kind == .directory { kept[names[child]] = NodeID(child) }
+            if nodes[child].kind == .group { groups.append(NodeID(child)) }
+        }
+
+        let first = NodeID(nodes.count)
+        var moved: [(from: NodeID, to: NodeID)] = []
+        var grafts: [(NodeID, ScanTree)] = []
+        func append(_ node: ScanTree.Node, named name: String) -> NodeID {
+            let id = NodeID(nodes.count)
+            var node = node
+            node.parent = target
+            nodes.append(node)
+            names.append(name)
+            sortedChildren.append(id)
+            return id
+        }
+        for child in listing.childRange(of: listing.root) {
+            let entry = listing.nodes[child]
+            let name = listing.names[child]
+            if entry.kind == .directory, !entry.flags.contains(.notEntered), let previous = kept[name],
+               nodes[Int(previous)].fileID == entry.fileID {
+                moved.append((previous, append(nodes[Int(previous)], named: name)))
+                continue
+            }
+            let id = append(entry, named: name)
+            if let code = listing.errors[NodeID(child)] { errors[id] = code }
+            if entry.kind == .directory, !entry.flags.contains(.notEntered), let subtree = subtrees[name] {
+                grafts.append((id, subtree))
+            }
+        }
+        for group in groups {
+            moved.append((group, append(nodes[Int(group)], named: names[Int(group)])))
+        }
+        nodes[Int(target)].firstChild = first
+        nodes[Int(target)].childCount = NodeID(nodes.count) - first
+        for (from, to) in moved {
+            for child in childRange(of: to) { nodes[child].parent = to }
+            if let code = errors.removeValue(forKey: from) { errors[to] = code }
+            if let path = basePaths.removeValue(forKey: from) { basePaths[to] = path }
+        }
+        for (id, subtree) in grafts { graft(subtree, at: id, propagates: false) }
+
+        errors[target] = listing.errors[listing.root]
+        if errors[target] == nil { nodes[Int(target)].flags.remove(.failed) } else { nodes[Int(target)].flags.insert(.failed) }
+        var size: Int64 = 0
+        var count: Int32 = 0
+        for child in childRange(of: target) where !nodes[child].flags.contains(.removed) {
+            size += nodes[child].size
+            count += nodes[child].descendantCount + 1
+        }
+        nodes[Int(target)].size = size
+        nodes[Int(target)].descendantCount = count
+        sortChildren(of: target)
+        propagate(from: target, size: size - old.size, count: count - old.descendantCount)
+    }
+
+    /// Adds a change of size and count to every ancestor of `id`, keeping sibling order by size.
+    private func propagate(from id: NodeID, size: Int64, count: Int32) {
+        var current = id
         while let parent = parent(of: current) {
-            nodes[Int(parent)].size += sizeChange
-            nodes[Int(parent)].descendantCount += countChange
+            nodes[Int(parent)].size += size
+            nodes[Int(parent)].descendantCount += count
             sortChildren(of: parent)
             current = parent
         }
@@ -241,17 +324,9 @@ nonisolated final class ScanTree: @unchecked Sendable {
     /// total above it, and the sibling order above it is brought up to date.
     func remove(_ id: NodeID) {
         guard id != root, !nodes[Int(id)].flags.contains(.removed) else { return }
-        let size = nodes[Int(id)].size
-        let count = nodes[Int(id)].descendantCount + 1
         nodes[Int(id)].flags.insert(.removed)
         hasRemovals = true
-        var current = id
-        while let parent = parent(of: current) {
-            nodes[Int(parent)].size -= size
-            nodes[Int(parent)].descendantCount -= count
-            sortChildren(of: parent)
-            current = parent
-        }
+        propagate(from: id, size: -nodes[Int(id)].size, count: -(nodes[Int(id)].descendantCount + 1))
     }
 
     private func sortChildren(of id: NodeID) {

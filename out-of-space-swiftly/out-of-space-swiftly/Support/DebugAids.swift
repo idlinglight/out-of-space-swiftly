@@ -74,15 +74,11 @@ enum DebugAids {
     }
 
     private static func find(_ path: String, in tree: ScanTree) -> NodeID? {
-        var current = tree.root
-        for component in path.split(separator: "/") {
-            guard let next = tree.children(of: current).first(where: { tree.name(of: $0) == component }) else {
-                Log.app.error("Debug aids: no \(path, privacy: .public) in the scan")
-                return nil
-            }
-            current = next
+        guard let id = tree.node(atRelativePath: path) else {
+            Log.app.error("Debug aids: no \(path, privacy: .public) in the scan")
+            return nil
         }
-        return current
+        return id
     }
 
     static func write(to path: String, model: ScanWindowModel) async {

@@ -21,6 +21,7 @@ private struct TreemapContent: View {
     let tree: ScanTree
     let key: TreemapDrawing.Key
     @State private var drawing: TreemapDrawing?
+    @State private var relayout: Task<Void, Never>?
 
     var body: some View {
         ZStack {
@@ -51,13 +52,27 @@ private struct TreemapContent: View {
                 ItemMenu(model: model, id: id)
             }
         }
-        .onChange(of: key, initial: true) {
-            drawing = TreemapDrawing(tree: tree, key: key)
+        .onChange(of: key, initial: true) { _, key in
+            relayout?.cancel()
+            guard let drawing, drawing.key.version == key.version, drawing.key.zoom == key.zoom else {
+                drawing = TreemapDrawing(tree: tree, key: key)
+                return
+            }
+            // While the window is being resized, the last drawing is shown scaled; the layout is redone
+            // once the size has settled.
+            relayout = Task {
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                self.drawing = TreemapDrawing(tree: tree, key: key)
+            }
         }
     }
 
     private func node(at location: CGPoint) -> NodeID? {
-        guard let drawing, let index = drawing.layout.tileIndex(at: location), index > 0 else { return nil }
+        guard let drawing else { return nil }
+        let point = CGPoint(x: location.x * drawing.key.size.width / max(key.size.width, 1),
+                            y: location.y * drawing.key.size.height / max(key.size.height, 1))
+        guard let index = drawing.layout.tileIndex(at: point), index > 0 else { return nil }
         return drawing.layout.tiles[index].id
     }
 }
@@ -67,7 +82,8 @@ private struct TreemapTiles: View, Equatable {
     let drawing: TreemapDrawing
 
     var body: some View {
-        Canvas(rendersAsynchronously: true) { context, _ in
+        Canvas(rendersAsynchronously: true) { context, size in
+            drawing.scale(&context, to: size)
             for (index, tile) in drawing.layout.tiles.enumerated() where index > 0 {
                 let style = drawing.styles[index]
                 let rect = tile.rect
@@ -82,7 +98,8 @@ private struct TreemapTiles: View, Equatable {
                 if let header = tile.header {
                     draw(label: style.label, detail: style.detail, in: header.insetBy(dx: 4, dy: 0),
                          font: .caption.weight(.medium), context: &context)
-                } else if style.showsLabel, rect.width > 56, rect.height > 18 {
+                } else if !tile.isSubdivided, style.showsLabel, rect.width > 56, rect.height > 18 {
+                    // A subdivided folder without room for a header gets no label: its children fill it.
                     let band = CGRect(x: rect.minX + 4, y: rect.minY + 2, width: rect.width - 8, height: 14)
                     draw(label: style.label, detail: rect.height > 34 ? style.detail : nil, in: band,
                          font: .caption2, context: &context)
@@ -116,7 +133,8 @@ private struct TreemapHighlight: View {
     let selection: NodeID?
 
     var body: some View {
-        Canvas { context, _ in
+        Canvas { context, size in
+            drawing.scale(&context, to: size)
             if let rect = rect(for: hovered), hovered != selection {
                 context.stroke(Path(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 3),
                                with: .color(.primary.opacity(0.7)), lineWidth: 1)
@@ -159,6 +177,12 @@ struct TreemapDrawing {
     /// The first tile of each node; remainder tiles carry their container's id and are not listed. Folders
     /// folded into a chain point to the chain's tile.
     let tileIndex: [NodeID: Int]
+
+    /// Fits the drawing to the canvas while the canvas is being resized and the layout not yet redone.
+    func scale(_ context: inout GraphicsContext, to size: CGSize) {
+        guard size != key.size, key.size.width > 0, key.size.height > 0 else { return }
+        context.scaleBy(x: size.width / key.size.width, y: size.height / key.size.height)
+    }
 
     static let style = TreemapStyle(padding: 3, headerHeight: 17, minimumHeaderWidth: 60, minimumSide: 4,
                                     maximumTileCount: 40_000)

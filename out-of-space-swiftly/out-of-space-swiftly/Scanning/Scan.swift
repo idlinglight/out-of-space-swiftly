@@ -10,6 +10,9 @@ nonisolated struct ScanOptions: Sendable {
     var protectedPaths = ScanOptions.defaultProtectedPaths
     /// When the root is `/`, also walk the Data volume for the folders that exist only there.
     var includesDataVolume = true
+    /// Whether subdirectories are walked; false lists the root's own entries only (to bring one folder up
+    /// to date).
+    var descends = true
     /// How long reading one directory may take before it is reported as slow.
     var slowAfter: Duration = .seconds(3)
     var progressInterval: Duration = .milliseconds(200)
@@ -58,6 +61,9 @@ nonisolated struct ScanResult: Sendable {
 /// Cancelling the task that awaits `run()`, or calling `cancel()`, returns the partial tree at once; a
 /// thread stuck in a system call is left to finish on its own and changes nothing after that.
 nonisolated final class Scan: Sendable {
+    /// The name of the group under `/` that holds what exists only on the Data volume.
+    static let dataVolumeGroupName = "Only on the Data volume"
+
     let rootPath: String
     let options: ScanOptions
     let progress: AsyncStream<ScanProgress>
@@ -352,7 +358,7 @@ private nonisolated final class ScanEngine: @unchecked Sendable {
         }
         var group: (name: String, node: ScanTree.Node)?
         if item.node == 0, rootPath == "/", options.includesDataVolume, Self.isMountPoint(Self.dataVolumePath) {
-            group = ("Only on the Data volume", ScanTree.Node(parent: 0, kind: .group))
+            group = (Scan.dataVolumeGroupName, ScanTree.Node(parent: 0, kind: .group))
         }
 
         var entered: [(id: NodeID, name: String)] = []
@@ -402,7 +408,7 @@ private nonisolated final class ScanEngine: @unchecked Sendable {
         bytes.add(byteCount, ordering: .relaxed)
         if code != 0 || hadEntryErrors { failures.add(1, ordering: .relaxed) }
 
-        guard !entered.isEmpty else { return }
+        guard options.descends, !entered.isEmpty else { return }
         let items = entered.reversed().map { child in
             WorkItem(node: child.id, name: child.name, parent: handle, dropsVisited: item.dropsVisited)
         }
