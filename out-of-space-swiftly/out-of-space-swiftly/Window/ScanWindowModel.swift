@@ -99,7 +99,9 @@ final class ScanWindowModel {
         scanTask = Task { [weak self] in
             let updates = Task { [weak self] in
                 for await progress in scan.progress {
-                    self?.progress = progress
+                    // A scan replaced by a newer one must not show its counts in the newer one's place.
+                    guard let self, self.scan === scan else { return }
+                    self.progress = progress
                 }
             }
             let result = await scan.run()
@@ -174,6 +176,7 @@ final class ScanWindowModel {
         let zoomPath = current.relativePath(of: zoom)
         let selectionPath = selection.map { current.relativePath(of: $0) }
         let updated = change(current)
+        updated.compactIfWasteful()
         tree = updated
         treeVersion += 1
         zoom = Self.nearest(zoomPath, in: updated)
@@ -240,10 +243,13 @@ final class ScanWindowModel {
         NSPasteboard.general.setString(tree.path(of: id), forType: .string)
     }
 
-    /// Whether `id` may be moved to the Trash from here: not the scan root, and nothing the scanner made up.
+    /// Whether `id` may be moved to the Trash from here: a file, folder or link the scan saw, not the scan
+    /// root, not another volume, nothing the scanner made up or left alone (protected, cloud-only), and no
+    /// firmlinked system folder.
     func canMoveToTrash(_ id: NodeID) -> Bool {
         guard let tree, id != tree.root else { return false }
-        return tree.kind(of: id) != .group && !tree.flags(of: id).contains(.removed)
+        guard [.file, .directory, .symlink, .other].contains(tree.kind(of: id)) else { return false }
+        return tree.flags(of: id).isDisjoint(with: [.removed, .notEntered, .protected, .dataless, .firmlink])
     }
 
     /// Moves the item to the Trash (the caller has asked for confirmation) and takes it out of the totals.

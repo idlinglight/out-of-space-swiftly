@@ -6,7 +6,8 @@ import os
 /// below it that are still there keep what was found in them, new ones are scanned); when macOS says events
 /// were lost, everything below the folder is scanned again.
 extension ScanWindowModel {
-    /// How long to wait after the last change, so a burst of changes costs one refresh.
+    /// How long to wait after the first change before refreshing, so a burst of changes costs one refresh.
+    /// Measured from the first change, not the last: a folder that never stops changing is still refreshed.
     static let refreshDelay: Duration = .seconds(2)
 
     func watch(_ target: ScanTarget) {
@@ -34,8 +35,7 @@ extension ScanWindowModel {
     /// Starts a refresh after a quiet moment, unless the scan or a refresh is still running; both call
     /// back here when they end.
     func refreshIfPending() {
-        guard !pendingChanges.isEmpty, phase == .finished, refreshTask == nil else { return }
-        debounceTask?.cancel()
+        guard !pendingChanges.isEmpty, phase == .finished, refreshTask == nil, debounceTask == nil else { return }
         debounceTask = Task { [weak self] in
             try? await Task.sleep(for: Self.refreshDelay)
             guard !Task.isCancelled, let self else { return }
@@ -57,10 +57,16 @@ extension ScanWindowModel {
         defer { setRefreshing(false) }
         for change in changes {
             guard !Task.isCancelled, self.tree === tree else { return }
-            guard let id = Self.directory(for: change.path, in: tree, rootPath: target.path) else { continue }
+            // Lost events somewhere the tree cannot point to (the Data volume of `/` as a whole): only a
+            // full scan is sure to catch up.
+            let id = Self.directory(for: change.path, in: tree, rootPath: target.path) ?? (change.deep ? tree.root : nil)
+            guard let id else { continue }
             if change.deep {
+                let path = tree.relativePath(of: id)
                 let result = await Scan(root: tree.url(of: id)).run()
                 guard !Task.isCancelled, self.tree === tree, !result.wasCancelled else { return }
+                // The folder may have gone to the Trash, or its ID changed, while it was being scanned.
+                guard tree.node(atRelativePath: path) == id else { continue }
                 updateTree { current in
                     guard id != current.root else { return result.tree }
                     current.graft(result.tree, at: id)
@@ -75,6 +81,7 @@ extension ScanWindowModel {
     /// Lists the folder again and scans only the folders in it that are new.
     private func refreshOneLevel(_ id: NodeID, in tree: ScanTree) async {
         let url = tree.url(of: id)
+        let path = tree.relativePath(of: id)
         var options = ScanOptions()
         options.descends = false
         options.includesDataVolume = false
@@ -95,6 +102,8 @@ extension ScanWindowModel {
             guard !Task.isCancelled, self.tree === tree, !result.wasCancelled else { return }
             subtrees[name] = result.tree
         }
+        // The folder may have gone to the Trash, or its ID changed, while it was being listed.
+        guard tree.node(atRelativePath: path) == id else { return }
         updateTree { current in
             current.refresh(id, listing: entries, subtrees: subtrees)
             return current

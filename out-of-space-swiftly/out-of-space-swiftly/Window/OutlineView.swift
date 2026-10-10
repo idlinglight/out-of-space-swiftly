@@ -9,8 +9,7 @@ struct OutlineView: View {
         if let tree = model.tree {
             OutlineTable(tree: tree, version: model.treeVersion, zoom: model.zoom,
                          selection: Binding { model.selection } set: { model.selection = $0 },
-                         sortOrder: $sortOrder,
-                         open: { id in tree.isContainer(id) ? model.zoom(into: id) : model.open(id) })
+                         sortOrder: $sortOrder)
                 .contextMenu(forSelectionType: NodeID.self) { ids in
                     if let id = ids.first { ItemMenu(model: model, id: id) }
                 } primaryAction: { ids in
@@ -28,7 +27,6 @@ private struct OutlineTable: View {
     let zoom: NodeID
     @Binding var selection: NodeID?
     @Binding var sortOrder: [KeyPathComparator<OutlineRow>]
-    let open: (NodeID) -> Void
 
     var body: some View {
         let order = OutlineRow.Order(sortOrder.first)

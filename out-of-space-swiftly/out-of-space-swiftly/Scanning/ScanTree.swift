@@ -67,6 +67,8 @@ nonisolated final class ScanTree: @unchecked Sendable {
         var size: Int64 = 0
         /// Files and directories below this node. Final after `finish()`.
         var descendantCount: Int32 = 0
+        /// Children moved to the Trash; they sit at the end of the sorted child block.
+        var removedChildren: Int32 = 0
         var device: Int32 = 0
         var fileID: UInt64 = 0
         /// Same for all members of a set of clones; 0 if unknown.
@@ -79,9 +81,8 @@ nonisolated final class ScanTree: @unchecked Sendable {
     private var basePaths: [NodeID: String] = [:]
     /// errno of directories that could not be read completely.
     private var errors: [NodeID: Int32] = [:]
-    /// Children of each directory ordered by size, largest first; filled by `finish()`.
+    /// Children of each directory ordered by size, largest first, removed ones last; filled by `finish()`.
     private var sortedChildren: [NodeID] = []
-    private var hasRemovals = false
 
     let rootPath: String
     let root: NodeID = 0
@@ -108,8 +109,7 @@ nonisolated final class ScanTree: @unchecked Sendable {
     /// Whether the node holds others: a directory that was entered, or a group, with children left.
     func isContainer(_ id: NodeID) -> Bool {
         let node = nodes[Int(id)]
-        guard (node.kind == .directory || node.kind == .group) && node.childCount > 0 else { return false }
-        return !hasRemovals || !children(of: id).isEmpty
+        return (node.kind == .directory || node.kind == .group) && node.childCount - node.removedChildren > 0
     }
 
     /// The indices of a node's child block, removed children included.
@@ -119,13 +119,14 @@ nonisolated final class ScanTree: @unchecked Sendable {
     }
 
     /// The node's children, largest first once the tree is finished; in reading order before. Removed
-    /// nodes are left out.
+    /// nodes are left out (they are sorted to the end of the block).
     func children(of id: NodeID) -> ArraySlice<NodeID> {
         let node = nodes[Int(id)]
-        let range = Int(node.firstChild) ..< Int(node.firstChild) + Int(node.childCount)
-        let children = sortedChildren.count == nodes.count ? sortedChildren[range] : ArraySlice(range.map { NodeID($0) })
-        guard hasRemovals else { return children }
-        return ArraySlice(children.filter { !nodes[Int($0)].flags.contains(.removed) })
+        let first = Int(node.firstChild)
+        guard sortedChildren.count == nodes.count else {
+            return ArraySlice((first ..< first + Int(node.childCount)).map { NodeID($0) })
+        }
+        return sortedChildren[first ..< first + Int(node.childCount - node.removedChildren)]
     }
 
     /// Ancestors from the root down to the node itself.
@@ -214,10 +215,9 @@ nonisolated final class ScanTree: @unchecked Sendable {
         for (id, path) in subtree.basePaths where id != 0 { basePaths[base + id] = path }
         errors[target] = nil
         for (id, code) in subtree.errors { errors[id == 0 ? target : base + id] = code }
-        hasRemovals = hasRemovals || subtree.hasRemovals
-
         nodes[Int(target)].firstChild = replacement.childCount > 0 ? base + replacement.firstChild : 0
         nodes[Int(target)].childCount = replacement.childCount
+        nodes[Int(target)].removedChildren = replacement.removedChildren
         nodes[Int(target)].size = replacement.size
         nodes[Int(target)].descendantCount = replacement.descendantCount
         nodes[Int(target)].flags = replacement.flags.union(old.flags.intersection([.firmlink]))
@@ -273,6 +273,7 @@ nonisolated final class ScanTree: @unchecked Sendable {
         }
         nodes[Int(target)].firstChild = first
         nodes[Int(target)].childCount = NodeID(nodes.count) - first
+        nodes[Int(target)].removedChildren = 0
         for (from, to) in moved {
             for child in childRange(of: to) { nodes[child].parent = to }
             if let code = errors.removeValue(forKey: from) { errors[to] = code }
@@ -294,14 +295,38 @@ nonisolated final class ScanTree: @unchecked Sendable {
         propagate(from: target, size: size - old.size, count: count - old.descendantCount)
     }
 
-    /// Adds a change of size and count to every ancestor of `id`, keeping sibling order by size.
+    /// Adds a change of size and count to every ancestor of `id`, moving each changed node to its place
+    /// among its siblings.
     private func propagate(from id: NodeID, size: Int64, count: Int32) {
         var current = id
         while let parent = parent(of: current) {
+            reposition(current, in: parent)
             nodes[Int(parent)].size += size
             nodes[Int(parent)].descendantCount += count
-            sortChildren(of: parent)
             current = parent
+        }
+    }
+
+    /// Whether `a` comes before `b` among siblings: larger first, removed last, then by ID.
+    private func precedes(_ a: NodeID, _ b: NodeID) -> Bool {
+        let (nodeA, nodeB) = (nodes[Int(a)], nodes[Int(b)])
+        let (removedA, removedB) = (nodeA.flags.contains(.removed), nodeB.flags.contains(.removed))
+        if removedA != removedB { return removedB }
+        return nodeA.size != nodeB.size ? nodeA.size > nodeB.size : a < b
+    }
+
+    /// Moves one child whose size changed to its place in its parent's otherwise sorted block.
+    private func reposition(_ child: NodeID, in parent: NodeID) {
+        guard sortedChildren.count == nodes.count else { return }
+        let range = childRange(of: parent)
+        guard var index = sortedChildren[range].firstIndex(of: child) else { return }
+        while index > range.lowerBound, precedes(child, sortedChildren[index - 1]) {
+            sortedChildren.swapAt(index, index - 1)
+            index -= 1
+        }
+        while index + 1 < range.upperBound, precedes(sortedChildren[index + 1], child) {
+            sortedChildren.swapAt(index, index + 1)
+            index += 1
         }
     }
 
@@ -325,19 +350,61 @@ nonisolated final class ScanTree: @unchecked Sendable {
     func remove(_ id: NodeID) {
         guard id != root, !nodes[Int(id)].flags.contains(.removed) else { return }
         nodes[Int(id)].flags.insert(.removed)
-        hasRemovals = true
+        nodes[Int(nodes[Int(id)].parent)].removedChildren += 1
         propagate(from: id, size: -nodes[Int(id)].size, count: -(nodes[Int(id)].descendantCount + 1))
     }
 
     private func sortChildren(of id: NodeID) {
         guard sortedChildren.count == nodes.count, nodes[Int(id)].childCount > 0 else { return }
-        let first = Int(nodes[Int(id)].firstChild)
-        let range = first ..< first + Int(nodes[Int(id)].childCount)
-        let ordered = sortedChildren[range].sorted { a, b in
-            let (sizeA, sizeB) = (nodes[Int(a)].size, nodes[Int(b)].size)
-            return sizeA != sizeB ? sizeA > sizeB : a < b
-        }
+        let range = childRange(of: id)
+        let ordered = sortedChildren[range].sorted(by: precedes)
         sortedChildren.replaceSubrange(range, with: ordered)
+    }
+
+    /// How many nodes the root reaches; the arrays also hold nodes replaced by updates or removed.
+    var reachableCount: Int { Int(nodes[Int(root)].descendantCount) + 1 }
+
+    /// Rebuilds the arrays when updates have left more garbage in them than tree. IDs change.
+    func compactIfWasteful() {
+        guard sortedChildren.count == nodes.count, nodes.count > 2 * reachableCount + 50_000 else { return }
+        compact()
+    }
+
+    /// Rebuilds the arrays with only what the root reaches, breadth first, each child block in sorted order.
+    func compact() {
+        precondition(sortedChildren.count == nodes.count, "the tree must be finished")
+        var order: [NodeID] = [root]
+        order.reserveCapacity(reachableCount)
+        var map = [NodeID](repeating: -1, count: nodes.count)
+        map[Int(root)] = 0
+        var index = 0
+        while index < order.count {
+            for child in children(of: order[index]) {
+                map[Int(child)] = NodeID(order.count)
+                order.append(child)
+            }
+            index += 1
+        }
+        var rebuilt: [Node] = []
+        rebuilt.reserveCapacity(order.count)
+        for old in order {
+            var node = nodes[Int(old)]
+            let live = children(of: old)
+            node.parent = old == root ? -1 : map[Int(node.parent)]
+            node.firstChild = live.first.map { map[Int($0)] } ?? 0
+            node.childCount = Int32(live.count)
+            node.removedChildren = 0
+            rebuilt.append(node)
+        }
+        names = order.map { names[Int($0)] }
+        basePaths = Dictionary(uniqueKeysWithValues: basePaths.compactMap { id, path in
+            map[Int(id)] >= 0 ? (map[Int(id)], path) : nil
+        })
+        errors = Dictionary(uniqueKeysWithValues: errors.compactMap { id, code in
+            map[Int(id)] >= 0 ? (map[Int(id)], code) : nil
+        })
+        nodes = rebuilt
+        sortedChildren = (0 ..< NodeID(nodes.count)).map { $0 }
     }
 
     /// Sums sizes and counts up the tree and orders each directory's children by size.

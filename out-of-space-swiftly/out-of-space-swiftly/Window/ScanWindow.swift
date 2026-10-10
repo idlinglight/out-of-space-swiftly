@@ -27,7 +27,9 @@ struct ScanWindow: View {
     }
 
     private func choose(_ url: URL) {
-        target = ScanTarget(path: url.resolvingSymlinksInPath().path)
+        let chosen = ScanTarget(path: url.resolvingSymlinksInPath().path)
+        // The same folder again (say, after stopping a scan) means: scan it again.
+        if chosen == target { model.start(chosen) } else { target = chosen }
     }
 }
 

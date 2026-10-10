@@ -39,6 +39,29 @@ struct ScanTreeTests {
         #expect(tree.size(of: tree.root) == 0)
     }
 
+    @Test func removedItemsSortLastAndCompactionDropsThem() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("a/big.bin", size: 200_000)
+        try fixture.file("a/small.bin", size: 2_000)
+        try fixture.file("b/mid.bin", size: 50_000)
+        let tree = await scan(fixture.root)
+        let a = try #require(tree.node(atRelativePath: "a"))
+        tree.remove(try #require(tree.node(atRelativePath: "a/big.bin")))
+
+        #expect(tree.children(of: a).map { tree.name(of: $0) } == ["small.bin"])
+        #expect(tree.children(of: tree.root).map { tree.name(of: $0) } == ["b", "a"])
+        let before = tree.size(of: tree.root)
+
+        tree.compact()
+
+        #expect(tree.count == tree.reachableCount)
+        #expect(tree.size(of: tree.root) == before)
+        #expect(tree.children(of: tree.root).map { tree.name(of: $0) } == ["b", "a"])
+        let small = try #require(tree.node(atRelativePath: "a/small.bin"))
+        #expect(tree.path(of: small) == fixture.url("a/small.bin").path)
+        #expect(tree.node(atRelativePath: "a/big.bin") == nil)
+    }
+
     @Test func refreshingOneLevelMatchesAFullScan() async throws {
         let fixture = try FixtureTree()
         try fixture.file("kept/deep/a.bin", size: 70_000)
