@@ -57,6 +57,16 @@ The facts behind this decision are in [docs/SCANNING.md](../SCANNING.md). In sho
 - A directory whose call takes longer than a few seconds is marked "slow" in the progress view, so the
   window shows where the scan waits; the other threads carry on.
 
+**Keeping a scan current**
+
+- A window watches its root with FSEvents from the moment the scan starts, so changes made during a scan
+  are caught up on afterwards. Events name directories; after two quiet seconds each changed directory is
+  listed again (one level, `ScanOptions.descends = false`): subdirectories that are still the same
+  directory (name and file ID) keep what was found in them, new ones are scanned, and totals are
+  corrected up to the root. Only when FSEvents reports lost events (must-scan-subdirectories) is the
+  whole subtree scanned again.
+- For a scan of `/`, event paths on the Data volume are mapped to their firmlinked place in the tree.
+
 **Numbers for a volume** come from the volume itself (`ATTR_VOL_SPACEUSED`, the capacity keys); a scan of a
 volume's root shows how its total compares, with the difference named rather than hidden.
 
@@ -68,5 +78,7 @@ volume's root shows how its total compares, with the difference named rather tha
 - Nothing needs Full Disk Access. With it, fewer places show up as unreadable.
 - A call that blocks forever keeps its thread. Enough of them would stall a scan; the "slow" marking makes
   that visible, and cancelling abandons those threads.
+- Background updates scan only part of the tree, so they cannot see hard links or clones shared with the
+  rest of it: such a file may count twice (or not at all) until the next full scan.
 - Several questions can only be answered by running the app (see SCANNING.md, section 7); answers may amend
   this ADR.

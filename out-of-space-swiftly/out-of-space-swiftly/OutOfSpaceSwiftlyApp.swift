@@ -11,10 +11,11 @@ struct OutOfSpaceSwiftlyApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        WindowGroup("Out Of Space Swiftly", for: ScanTarget.self) { $target in
+            ScanWindow(target: $target)
         }
         .commands {
+            ScanCommands()
             CommandGroup(replacing: .appInfo) {
                 Button("About Out Of Space Swiftly") {
                     NSApp.orderFrontStandardAboutPanel(options: [

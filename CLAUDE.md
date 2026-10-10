@@ -17,6 +17,9 @@
   questions.
 - The repository is public. Keep personal context, real paths and file names from the user's disk, scan
   output and secrets out of it. Test fixtures are trees generated in a temporary directory.
+- Debug builds read `OOSS_*` environment variables to scan a folder, zoom, select and write a snapshot
+  (PNG plus a text dump of the model and views), then quit; see `Support/DebugAids.swift`. That is how
+  to look at the UI without anyone at the screen.
 - Tests and debug runs never scan protected or personal locations (`~/Library`, Desktop, Documents,
   Downloads, cloud storage, other volumes) and never move real files to the Trash: point them at generated
   trees.
