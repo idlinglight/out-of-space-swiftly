@@ -22,21 +22,28 @@ private struct TreemapContent: View {
     let key: TreemapDrawing.Key
     @State private var drawing: TreemapDrawing?
     @State private var relayout: Task<Void, Never>?
+    /// The tile under the pointer, which may be a "smaller items" tile (that has no node of its own).
+    @State private var hoveredTile: Int?
 
     var body: some View {
         ZStack {
             if let drawing {
                 TreemapTiles(drawing: drawing)
-                TreemapHighlight(drawing: drawing, tree: tree, hovered: model.hovered, selection: model.selection)
+                if let drawing = current {
+                    TreemapHighlight(drawing: drawing, tree: tree, hoveredTile: hoveredTile, selection: model.selection)
+                }
             }
         }
         .contentShape(Rectangle())
         .onContinuousHover { phase in
             switch phase {
             case .active(let location):
-                let id = node(at: location)
+                let index = tile(at: location)
+                if hoveredTile != index { hoveredTile = index }
+                let id = index.flatMap { current?.layout.tiles[$0].id }
                 if model.hovered != id { model.hovered = id }
             case .ended:
+                hoveredTile = nil
                 model.hovered = nil
             }
         }
@@ -68,12 +75,23 @@ private struct TreemapContent: View {
         }
     }
 
-    private func node(at location: CGPoint) -> NodeID? {
-        guard let drawing else { return nil }
+    /// The drawing, if it was made from the tree as it is now. Updates can renumber nodes; until the drawing
+    /// is redone, its IDs would point to the wrong items. A drawing for another size (during a resize) is fine.
+    private var current: TreemapDrawing? {
+        guard let drawing, drawing.key.version == key.version, drawing.key.zoom == key.zoom else { return nil }
+        return drawing
+    }
+
+    private func tile(at location: CGPoint) -> Int? {
+        guard let drawing = current else { return nil }
         let point = CGPoint(x: location.x * drawing.key.size.width / max(key.size.width, 1),
                             y: location.y * drawing.key.size.height / max(key.size.height, 1))
         guard let index = drawing.layout.tileIndex(at: point), index > 0 else { return nil }
-        return drawing.layout.tiles[index].id
+        return index
+    }
+
+    private func node(at location: CGPoint) -> NodeID? {
+        tile(at: location).flatMap { current?.layout.tiles[$0].id }
     }
 }
 
@@ -125,35 +143,40 @@ private struct TreemapTiles: View, Equatable {
     }
 }
 
-/// Outlines for the hovered and the selected item: solid around the item's own tile, dashed around the tile
-/// standing in for an item too small to have one.
+/// Outlines for the tile under the pointer and for the selected item: solid around the item's own tile, dashed
+/// around the tile standing in for an item too small to have one.
 private struct TreemapHighlight: View {
     let drawing: TreemapDrawing
     let tree: ScanTree
-    let hovered: NodeID?
+    let hoveredTile: Int?
     let selection: NodeID?
 
     var body: some View {
         Canvas { context, size in
-            drawing.scale(&context, to: size)
-            if let hovered, hovered != selection, let outline = drawing.outline(for: hovered, in: tree) {
-                context.stroke(Path(roundedRect: Self.visible(outline.rect).insetBy(dx: 0.5, dy: 0.5), cornerRadius: 3),
-                               with: .color(.primary.opacity(0.7)),
-                               style: StrokeStyle(lineWidth: 1, dash: outline.isExact ? [] : [3, 2]))
+            // The rects are scaled, not the context, so strokes and dashes keep their shape during a resize.
+            let selected = selection.flatMap { drawing.outline(for: $0, in: tree) }
+            if let hoveredTile, drawing.layout.tiles[hoveredTile].rect != selected?.rect {
+                let rect = drawing.scaled(drawing.layout.tiles[hoveredTile].rect, to: size)
+                context.stroke(Path(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 3),
+                               with: .color(.primary.opacity(0.7)), lineWidth: 1)
             }
-            if let selection, let outline = drawing.outline(for: selection, in: tree) {
-                context.stroke(Path(roundedRect: Self.visible(outline.rect).insetBy(dx: 1, dy: 1), cornerRadius: 3),
+            if let selected {
+                let rect = Self.visible(drawing.scaled(selected.rect, to: size), within: CGRect(origin: .zero, size: size))
+                context.stroke(Path(roundedRect: rect.insetBy(dx: 1, dy: 1), cornerRadius: 3),
                                with: .color(.accentColor),
-                               style: StrokeStyle(lineWidth: 2, dash: outline.isExact ? [] : [5, 3]))
+                               style: StrokeStyle(lineWidth: 2, dash: selected.isExact ? [] : [5, 3]))
             }
         }
         .allowsHitTesting(false)
     }
 
-    /// A tile a few points small still gets an outline one can see, centered on where it is.
-    private static func visible(_ rect: CGRect) -> CGRect {
+    /// A tile a few points small still gets an outline one can see, centered on it and kept inside the view.
+    private static func visible(_ rect: CGRect, within bounds: CGRect) -> CGRect {
         let side: CGFloat = 12
-        return rect.insetBy(dx: min(0, (rect.width - side) / 2), dy: min(0, (rect.height - side) / 2))
+        var rect = rect.insetBy(dx: min(0, (rect.width - side) / 2), dy: min(0, (rect.height - side) / 2))
+        rect.origin.x = min(max(rect.minX, bounds.minX), bounds.maxX - rect.width)
+        rect.origin.y = min(max(rect.minY, bounds.minY), bounds.maxY - rect.height)
+        return rect
     }
 }
 
@@ -180,6 +203,13 @@ struct TreemapDrawing {
     let tileIndex: [NodeID: Int]
     /// The "smaller items" tile of each folder that has one, by the folder's id.
     let remainderIndex: [NodeID: Int]
+
+    /// A rect of the layout where it shows on a canvas of `size` (the same unless a resize is under way).
+    func scaled(_ rect: CGRect, to size: CGSize) -> CGRect {
+        guard size != key.size, key.size.width > 0, key.size.height > 0 else { return rect }
+        let (x, y) = (size.width / key.size.width, size.height / key.size.height)
+        return CGRect(x: rect.minX * x, y: rect.minY * y, width: rect.width * x, height: rect.height * y)
+    }
 
     /// Fits the drawing to the canvas while the canvas is being resized and the layout not yet redone.
     func scale(_ context: inout GraphicsContext, to size: CGSize) {
