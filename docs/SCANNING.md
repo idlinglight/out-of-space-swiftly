@@ -163,8 +163,12 @@ One pass of `getattrlistbulk` gets everything needed (verified): common `RETURNE
   `FSOPT_PACK_INVAL_ATTRS`; with that option every requested attribute is packed (verified).
 - The man page says volume attributes need the volume's root; macOS 26.7 answers for any path, with the
   figures of the volume `statfs` names for it (verified).
-- `/` is the sealed system volume: its own used space is the system's only. `volumeURLKey` gives `/` for
-  paths on the Data volume, where `statfs` gives `/System/Volumes/Data` (verified).
+- `/` is the sealed system volume: its own used space and counts are the system's only. A scan of `/` also
+  walks the Data volume (ADR-0004), so the figures to compare with are the sums of both volumes'
+  (`/System/Volumes/Data` is a mount point, verified). Total minus available exceeds that sum by the
+  container's other volumes: Preboot, VM and Update made up most of a 9 GB difference (verified), the
+  unmounted Recovery volume and metadata likely the rest. `volumeURLKey` gives `/` for paths on the Data
+  volume, where `statfs` gives `/System/Volumes/Data` (verified).
 - `volumeAvailableCapacityForImportantUsageKey` can be 0 (seen on an external APFS volume) (verified).
 - Purgeable space ≈ `volumeAvailableCapacityForImportantUsageKey` − `volumeAvailableCapacityKey` (the
   header defines "important" as including space from purging caches) (verified values, likely meaning).

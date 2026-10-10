@@ -96,15 +96,46 @@ struct FileSystemEventsTests {
         let missing = FileManager.default.temporaryDirectory.appending(path: "oos-missing-\(UUID().uuidString)")
         #expect(throws: POSIXError.self) { try FileSystemEvents.watch(missing) }
     }
+    @Test func relativePaths() {
+        let events = FileSystemEvents(root: "/r/w", changes: AsyncStream { $0.finish() })
+        #expect(events.relativePath(of: "/r/w") == "")
+        #expect(events.relativePath(of: "/r/w/a/b") == "a/b")
+        #expect(events.relativePath(of: "/r/wx/a") == nil)
+        #expect(events.relativePath(of: "/r/x") == nil)
+        // At or above the root: rescan all.
+        #expect(events.relativePath(of: "/r") == "")
+        #expect(events.relativePath(of: "/") == "")
 
-    @Test func relativePaths() throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let events = try FileSystemEvents.watch(directory)
-        #expect(events.relativePath(of: events.root) == "")
-        #expect(events.relativePath(of: events.root + "/a/b") == "a/b")
-        #expect(events.relativePath(of: events.root + "x/a") == nil)
-        #expect(events.relativePath(of: "/") == nil)
+        let everything = FileSystemEvents(root: "/", changes: AsyncStream { $0.finish() })
+        #expect(everything.relativePath(of: "/") == "")
+        #expect(everything.relativePath(of: "/a/b") == "a/b")
+    }
+
+    @Test func droppedBatchesAreFollowedByARescanOfTheRoot() async {
+        let (stream, continuation) = AsyncStream.makeStream(
+            of: [FileSystemChange].self, bufferingPolicy: .bufferingNewest(2)
+        )
+        let batches = (1...5).map { [FileSystemChange(path: "/r/\($0)", flags: [], eventID: UInt64($0))] }
+        for batch in batches { FileSystemEvents.yield(batch, root: "/r", to: continuation) }
+        continuation.finish()
+
+        var received: [[FileSystemChange]] = []
+        for await batch in stream { received.append(batch) }
+        let rescan = FileSystemChange(path: "/r", flags: [.mustScanSubdirectories, .userDropped], eventID: 0)
+        #expect(received == [batches[4], [rescan]])
+    }
+
+    @Test func batchesThatFitArriveUnchanged() async {
+        let (stream, continuation) = AsyncStream.makeStream(
+            of: [FileSystemChange].self, bufferingPolicy: .bufferingNewest(FileSystemEvents.bufferedBatches)
+        )
+        let batches = (1...3).map { [FileSystemChange(path: "/r/\($0)", flags: [], eventID: UInt64($0))] }
+        for batch in batches { FileSystemEvents.yield(batch, root: "/r", to: continuation) }
+        continuation.finish()
+
+        var received: [[FileSystemChange]] = []
+        for await batch in stream { received.append(batch) }
+        #expect(received == batches)
     }
 }
 
@@ -130,7 +161,8 @@ private final class ChangeLog: Sendable {
     func count(covering directory: String) -> Int {
         changes.count { change in
             change.path == directory
-                || (change.flags.contains(.mustScanSubdirectories) && directory.hasPrefix(change.path + "/"))
+                || (change.flags.contains(.mustScanSubdirectories)
+                    && FileSystemEvents.path(change.path, contains: directory))
         }
     }
 }

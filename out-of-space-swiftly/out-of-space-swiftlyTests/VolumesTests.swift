@@ -3,13 +3,15 @@ import Foundation
 import Testing
 @testable import out_of_space_swiftly
 
+/// Only `/` (with its Data volume) is read; listing mount points reads no volume.
 struct VolumesTests {
-    @Test func rootVolumeIsListedFirstWithPlausibleNumbers() throws {
-        let volumes = Volumes.browsable()
-        let root = try #require(volumes.first)
+    @Test func rootIsAmongTheBrowsableMountPoints() {
+        #expect(Volumes.browsableVolumeURLs().contains { $0.path == "/" })
+    }
+
+    @Test func rootVolumeHasPlausibleNumbers() throws {
+        let root = try VolumeInfo.load(URL(filePath: "/", directoryHint: .isDirectory))
         #expect(root.isRootFileSystem)
-        #expect(root.url.path == "/")
-        #expect(volumes.filter(\.isRootFileSystem).count == 1)
         #expect(!root.name.isEmpty)
         #expect(root.isLocal)
         #expect(root.isBrowsable)
@@ -17,12 +19,22 @@ struct VolumesTests {
         #expect(root.totalCapacity > 0)
         #expect((0...root.totalCapacity).contains(root.availableCapacity))
         #expect(root.containerUsedCapacity == root.totalCapacity - root.availableCapacity)
-        #expect(root.displayedUsedCapacity == root.containerUsedCapacity)
-        let used = try #require(root.usedSpace)
-        #expect((1...root.totalCapacity).contains(used))
-        #expect(try #require(root.fileCount) > 0)
-        #expect(try #require(root.directoryCount) > 0)
         #expect(root.purgeableEstimate >= 0)
+
+        // The system volume's own figures plus the Data volume's.
+        let system = root.attributes
+        let data = try #require(root.dataVolumeAttributes)
+        let systemUsed = try #require(system.usedSpace), dataUsed = try #require(data.usedSpace)
+        let systemFiles = try #require(system.fileCount), dataFiles = try #require(data.fileCount)
+        let systemDirectories = try #require(system.directoryCount)
+        let dataDirectories = try #require(data.directoryCount)
+        let used = try #require(root.usedSpace)
+        #expect(used == systemUsed + dataUsed)
+        #expect((1...root.totalCapacity).contains(used))
+        #expect(root.displayedUsedCapacity == used)
+        #expect(root.fileCount == systemFiles + dataFiles)
+        #expect(root.directoryCount == systemDirectories + dataDirectories)
+        #expect(systemFiles > 0 && dataFiles > 0)
     }
 
     /// The getattrlist buffer is parsed at fixed offsets; a wrong order would show up as numbers that
@@ -45,43 +57,71 @@ struct VolumesTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let volume = try Volumes.volume(containing: directory)
         let resolved = try FileSystemEvents.resolvedPath(directory)
-        let mountPoint = volume.url.path
-        #expect(resolved.hasPrefix(mountPoint.hasSuffix("/") ? mountPoint : mountPoint + "/"))
+        #expect(FileSystemEvents.path(volume.url.path, contains: resolved))
         #expect(volume.totalCapacity > 0)
         #expect(volume.availableCapacity <= volume.totalCapacity)
-
-        let again = try Volumes.volume(containing: volume.url)
-        #expect(again.url.path == volume.url.path)
     }
 
-    @Test func purgeableEstimateIsNeverNegative() throws {
-        var volume = try #require(Volumes.browsable().first)
-        volume.availableCapacity = 100
-        volume.availableCapacityForImportantUsage = 0
-        #expect(volume.purgeableEstimate == 0)
-        volume.availableCapacityForImportantUsage = 250
-        #expect(volume.purgeableEstimate == 150)
-        volume.availableCapacityForImportantUsage = nil
-        #expect(volume.purgeableEstimate == 0)
+    @Test func purgeableEstimateIsNeverNegative() {
+        #expect(makeVolume(available: 100, important: 0).purgeableEstimate == 0)
+        #expect(makeVolume(available: 100, important: 250).purgeableEstimate == 150)
+        #expect(makeVolume(available: 100, important: nil).purgeableEstimate == 0)
     }
 
-    @Test func onlyTheRootShowsTheContainerFigure() throws {
-        var volume = try #require(Volumes.browsable().first)
-        volume.totalCapacity = 1000
-        volume.availableCapacity = 300
-        volume.usedSpace = 200
-        volume.isRootFileSystem = true
-        #expect(volume.displayedUsedCapacity == 700)
-        volume.isRootFileSystem = false
-        #expect(volume.displayedUsedCapacity == 200)
-        volume.usedSpace = nil
-        #expect(volume.displayedUsedCapacity == 700)
+    @Test func usedFiguresAddTheDataVolumeAndNameTheRest() {
+        let root = makeVolume(root: true, total: 1000, available: 300, used: 50, dataUsed: 600)
+        #expect(root.usedSpace == 650)
+        #expect(root.displayedUsedCapacity == 650)
+        #expect(root.containerUsedCapacity == 700)
+        #expect(root.otherContainerUsage == 50)
+
+        let other = makeVolume(total: 1000, available: 300, used: 200)
+        #expect(other.displayedUsedCapacity == 200)
+        #expect(other.otherContainerUsage == 500)
+
+        let unknown = makeVolume(total: 1000, available: 300, used: nil)
+        #expect(unknown.usedSpace == nil)
+        #expect(unknown.displayedUsedCapacity == 700)
+        #expect(unknown.otherContainerUsage == 0)
+    }
+
+    @Test func rootComesFirstThenByName() {
+        let volumes = Volumes.ordered([
+            makeVolume("/Volumes/b", name: "b"), makeVolume("/", name: "z", root: true), makeVolume("/Volumes/a", name: "A"),
+        ])
+        #expect(volumes.map(\.name) == ["z", "A", "b"])
+    }
+
+    @Test func aVolumeThatHangsIsLeftOut() async {
+        let urls = ["/a", "/hung", "/b"].map { URL(filePath: $0, directoryHint: .isDirectory) }
+        let clock = ContinuousClock()
+        let start = clock.now
+        let volumes = await Volumes.load(urls, timeout: .milliseconds(300)) { url in
+            if url.path == "/hung" { Thread.sleep(forTimeInterval: 3) }
+            return makeVolume(url.path)
+        }
+        #expect(Set(volumes.map(\.url.path)) == ["/a", "/b"])
+        #expect(clock.now - start < .seconds(2))
     }
 }
 
-/// A new, empty directory under the test process's temporary directory.
-func makeTemporaryDirectory() throws -> URL {
-    let url = FileManager.default.temporaryDirectory.appending(path: "oos-test-\(UUID().uuidString)", directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
-    return url
+private func makeVolume(
+    _ path: String = "/Volumes/Test", name: String = "Test", root: Bool = false, total: Int64 = 1000,
+    available: Int64 = 300, important: Int64? = nil, used: Int64? = nil, dataUsed: Int64? = nil
+) -> VolumeInfo {
+    VolumeInfo(
+        url: URL(filePath: path, directoryHint: .isDirectory),
+        name: name,
+        totalCapacity: total,
+        availableCapacity: available,
+        availableCapacityForImportantUsage: important,
+        attributes: VolumeAttributes(usedSpace: used),
+        dataVolumeAttributes: dataUsed.map { VolumeAttributes(usedSpace: $0) },
+        isRootFileSystem: root,
+        isRemovable: false,
+        isEjectable: false,
+        isLocal: true,
+        isBrowsable: true,
+        isReadOnly: false
+    )
 }

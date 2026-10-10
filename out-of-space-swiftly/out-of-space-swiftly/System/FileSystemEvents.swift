@@ -18,7 +18,7 @@ nonisolated struct FileSystemChange: Sendable, Hashable {
         /// Events were coalesced: rescan `path` recursively, not just its entries.
         static let mustScanSubdirectories = Flags(kFSEventStreamEventFlagMustScanSubDirs)
         /// Events were dropped in this process (`userDropped`) or the kernel (`kernelDropped`); comes with
-        /// `mustScanSubdirectories`.
+        /// `mustScanSubdirectories`. The watcher also reports `userDropped` when its own buffer overflows.
         static let userDropped = Flags(kFSEventStreamEventFlagUserDropped)
         static let kernelDropped = Flags(kFSEventStreamEventFlagKernelDropped)
         static let eventIDsWrapped = Flags(kFSEventStreamEventFlagEventIdsWrapped)
@@ -49,12 +49,26 @@ nonisolated struct FileSystemChange: Sendable, Hashable {
 nonisolated struct FileSystemEvents: Sendable {
     /// The watched directory, resolved.
     let root: String
-    /// One element per FSEvents callback. Ends when the consuming task is cancelled or the stream is
-    /// dropped; the FSEventStream is then stopped and released, and no callback follows.
+    /// One element per FSEvents callback.
+    ///
+    /// - At most `bufferedBatches` wait for the consumer. Beyond that the oldest are dropped, and a batch
+    ///   asking for a recursive rescan of the root follows (see `yield(_:root:to:)`).
+    /// - Root moved, deleted or created again: a `rootChanged` change at `root`. The stream stays open:
+    ///   FSEvents keeps watching the path, and once a directory is back there its changes are reported as
+    ///   before (verified). The consumer checks whether the root still exists and cancels if it is done.
+    /// - The root's volume unmounted: FSEvents reports nothing at all (verified with a disk image), so watch
+    ///   for unmounts separately. A volume mounted or unmounted *inside* the tree reports `mount` or `unmount`
+    ///   at its mount point (verified).
+    ///
+    /// Ends when the consuming task is cancelled or the stream is dropped; the FSEventStream is then stopped
+    /// and released, and no callback follows.
     let changes: AsyncStream<[FileSystemChange]>
 
+    /// About a minute of changes at the default latency.
+    static let bufferedBatches = 64
+
     nonisolated enum WatchError: Error {
-        case cannotCreateStream, cannotStartStream
+        case cannotCreateStream, cannotStartStream, pathNotRepresentable
     }
 
     /// Starts watching `directory` and everything below it; events are buffered from here on.
@@ -74,8 +88,10 @@ nonisolated struct FileSystemEvents: Sendable {
         onStop: (@Sendable () -> Void)? = nil
     ) throws -> FileSystemEvents {
         let root = try resolvedPath(directory)
-        let (changes, continuation) = AsyncStream.makeStream(of: [FileSystemChange].self)
-        let watch = Watch(continuation: continuation, onStop: onStop)
+        let (changes, continuation) = AsyncStream.makeStream(
+            of: [FileSystemChange].self, bufferingPolicy: .bufferingNewest(bufferedBatches)
+        )
+        let watch = Watch(root: root, continuation: continuation, onStop: onStop)
 
         // The stream retains the watch through these callbacks and releases it in FSEventStreamRelease.
         var context = FSEventStreamContext(
@@ -95,7 +111,6 @@ nonisolated struct FileSystemEvents: Sendable {
         // WatchRoot reports a moved or deleted root as `rootChanged`.
         var flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagWatchRoot)
         if fileLevel { flags |= FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents) }
-        let seconds = Double(latency.components.seconds) + Double(latency.components.attoseconds) * 1e-18
         guard let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
             { _, info, count, paths, flags, ids in
@@ -106,7 +121,7 @@ nonisolated struct FileSystemEvents: Sendable {
             &context,
             [root] as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-            seconds,
+            latency / .seconds(1),
             flags
         ) else { throw WatchError.cannotCreateStream }
 
@@ -122,34 +137,57 @@ nonisolated struct FileSystemEvents: Sendable {
         return FileSystemEvents(root: root, changes: changes)
     }
 
-    /// `path` relative to `root`: "" for the root itself, nil for paths outside it.
+    /// `path` relative to `root`: "a/b" for a path inside it, nil for one outside. "" stands for the root and
+    /// everything below it, so rescan all: it is returned for `root` itself and for any path above it, where
+    /// FSEvents reports `rootChanged` and may report coalesced or dropped events (`mustScanSubdirectories`).
     func relativePath(of path: String) -> String? {
-        if path == root { return "" }
-        let prefix = root.hasSuffix("/") ? root : root + "/"
-        return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : nil
+        if Self.path(path, contains: root) { return "" }
+        guard Self.path(root, contains: path) else { return nil }
+        return String(path.dropFirst(root == "/" ? 1 : root.count + 1))
+    }
+
+    /// Whether `path` is `ancestor` or lies below it. Both absolute, without a trailing slash.
+    static func path(_ ancestor: String, contains path: String) -> Bool {
+        if ancestor == "/" { return path.hasPrefix("/") }
+        return path == ancestor || path.hasPrefix(ancestor + "/")
+    }
+
+    /// Yields `batch` into the bounded stream. When the buffer is full, the oldest batch is dropped; a batch
+    /// asking for a recursive rescan of `root` then follows, which covers whatever was lost. That batch is the
+    /// newest, so it outlives what it replaces; if later batches push it out too, those yields report drops
+    /// and bring another.
+    static func yield(
+        _ batch: [FileSystemChange], root: String, to continuation: AsyncStream<[FileSystemChange]>.Continuation
+    ) {
+        guard case .dropped = continuation.yield(batch) else { return }
+        continuation.yield([FileSystemChange(path: root, flags: [.mustScanSubdirectories, .userDropped], eventID: 0)])
     }
 
     /// `url`'s path as FSEvents reports it.
     static func resolvedPath(_ url: URL) throws -> String {
-        let (resolved, error) = url.withUnsafeFileSystemRepresentation { path in
-            let resolved = path.flatMap { realpath($0, nil) }
-            return (resolved, errno)
+        let resolved: Result<String, any Error> = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return .failure(WatchError.pathNotRepresentable) }
+            guard let resolved = realpath(path, nil) else {
+                return .failure(POSIXError(POSIXErrorCode(rawValue: errno) ?? .ENOENT))
+            }
+            defer { free(resolved) }
+            return .success(String(cString: resolved))
         }
-        guard let resolved else { throw POSIXError(POSIXErrorCode(rawValue: error) ?? .ENOENT) }
-        defer { free(resolved) }
-        return String(cString: resolved)
+        return try resolved.get()
     }
 }
 
 /// The callback's state. `stream` is set before the stream starts and afterwards only touched on `queue`,
 /// where FSEvents delivers its callbacks too.
 private nonisolated final class Watch: @unchecked Sendable {
+    let root: String
     let continuation: AsyncStream<[FileSystemChange]>.Continuation
     let onStop: (@Sendable () -> Void)?
     let queue = DispatchQueue(label: "at.idling.out-of-space-swiftly.fsevents", qos: .utility)
     var stream: FSEventStreamRef?
 
-    init(continuation: AsyncStream<[FileSystemChange]>.Continuation, onStop: (@Sendable () -> Void)?) {
+    init(root: String, continuation: AsyncStream<[FileSystemChange]>.Continuation, onStop: (@Sendable () -> Void)?) {
+        self.root = root
         self.continuation = continuation
         self.onStop = onStop
     }
@@ -169,7 +207,7 @@ private nonisolated final class Watch: @unchecked Sendable {
             if path.count > 1, path.hasSuffix("/") { path.removeLast() }
             return FileSystemChange(path: path, flags: .init(rawValue: flags[i]), eventID: ids[i])
         }
-        continuation.yield(batch)
+        FileSystemEvents.yield(batch, root: root, to: continuation)
     }
 
     func stop() {
