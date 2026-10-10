@@ -157,6 +157,19 @@ One pass of `getattrlistbulk` gets everything needed (verified): common `RETURNE
 - All volumes in an APFS container report the same total and free space (verified).
 - Per-volume used space comes from `getattrlist(ATTR_VOL_SPACEUSED)` and matches `diskutil`'s "Capacity
   Consumed" (verified). It need not equal size minus free when volumes share a container (man page).
+- Volume attributes are packed in description order too: `ATTR_VOL_SPACEUSED` (bit 0x800000) comes right
+  after `ATTR_VOL_SPACEAVAIL`, before `ATTR_VOL_FILECOUNT` and `ATTR_VOL_DIRCOUNT` (verified against
+  `statfs`). An autofs mount packed counts it did not mark as returned, even without
+  `FSOPT_PACK_INVAL_ATTRS`; with that option every requested attribute is packed (verified).
+- The man page says volume attributes need the volume's root; macOS 26.7 answers for any path, with the
+  figures of the volume `statfs` names for it (verified).
+- `/` is the sealed system volume: its own used space and counts are the system's only. A scan of `/` also
+  walks the Data volume (ADR-0004), so the figures to compare with are the sums of both volumes'
+  (`/System/Volumes/Data` is a mount point, verified). Total minus available exceeds that sum by the
+  container's other volumes: Preboot, VM and Update made up most of a 9 GB difference (verified), the
+  unmounted Recovery volume and metadata likely the rest. `volumeURLKey` gives `/` for paths on the Data
+  volume, where `statfs` gives `/System/Volumes/Data` (verified).
+- `volumeAvailableCapacityForImportantUsageKey` can be 0 (seen on an external APFS volume) (verified).
 - Purgeable space ≈ `volumeAvailableCapacityForImportantUsageKey` − `volumeAvailableCapacityKey` (the
   header defines "important" as including space from purging caches) (verified values, likely meaning).
 - `ATTR_VOL_FILECOUNT` + `ATTR_VOL_DIRCOUNT` give a cheap progress denominator for a whole-volume scan
