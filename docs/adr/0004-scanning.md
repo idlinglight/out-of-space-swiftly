@@ -23,12 +23,13 @@ The facts behind this decision are in [docs/SCANNING.md](../SCANNING.md). In sho
 - Our own walker over `getattrlistbulk`, opening each directory with `openat` relative to its parent's
   descriptor (no path length limit). One call per directory batch fetches name, type, flags, IDs, mount
   status, link count, logical and allocated size, extended flags, clone ID and private size.
-- Directories are work items for a small pool of dedicated threads (default: the number of performance
-  cores), not Swift's cooperative pool. Results reach the window's model in batches through an async
-  stream; the tree is built off the main actor.
-- At launch the process sets: dataless materialization off, automount trigger resolution off, access time
-  updates off; scan threads use the utility I/O policy. The file descriptor soft limit is raised to fit
-  the pool. The effective values are logged.
+- Directories are work items on a stack (newest first, so few directories are open at a time) for a small
+  pool of dedicated threads (default: the number of performance cores), not Swift's cooperative pool.
+  Progress reaches the window through an async stream; the tree is built off the main actor and handed
+  over when the scan ends.
+- At launch the process turns off automount trigger resolution and access time updates, and raises the
+  file descriptor soft limit. Each scan thread turns off dataless materialization for itself (so the rest
+  of the app is unaffected) and uses the utility I/O policy. The effective values are logged.
 
 **What counts**
 

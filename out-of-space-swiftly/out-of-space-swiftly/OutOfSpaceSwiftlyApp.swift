@@ -7,6 +7,7 @@ struct OutOfSpaceSwiftlyApp: App {
     init() {
         let build = BuildInfo.current
         Log.app.notice("Launch: version \(build.version, privacy: .public) (\(build.build, privacy: .public)). \(build.summary, privacy: .public)")
+        ScanProcessSettings.applyAtLaunch()
     }
 
     var body: some Scene {
