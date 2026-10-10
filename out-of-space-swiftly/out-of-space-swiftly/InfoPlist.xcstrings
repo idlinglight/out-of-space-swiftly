@@ -1,0 +1,28 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "CFBundleDisplayName" : {
+      "comment" : "Name shown by Finder and Spotlight.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Out Of Space Swiftly"
+          }
+        }
+      }
+    },
+    "CFBundleName" : {
+      "comment" : "Name in the menu bar.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Out Of Space Swiftly"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

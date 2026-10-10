@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PROJECT: out-of-space-swiftly/out-of-space-swiftly.xcodeproj
+  SCHEME: out-of-space-swiftly
+  DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+
+defaults:
+  run:
+    shell: bash # adds -eo pipefail; the default macOS run shell omits pipefail
+
+jobs:
+  build-and-test: # the required check name in the ruleset is this job id
+    runs-on: xcode-27 # public preview, arm64, Xcode 27.0 (27A266a) is the default
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: xcodebuild -version && sw_vers
+
+      - name: Build and test (ad hoc signed, no certificates)
+        run: >
+          xcodebuild test
+          -project "$PROJECT" -scheme "$SCHEME" -configuration Debug
+          -destination 'platform=macOS,arch=arm64'
+          -derivedDataPath "$RUNNER_TEMP/DerivedData"
+          -resultBundlePath "$RUNNER_TEMP/TestResults.xcresult"
+          CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=
+
+      - name: Report test failures
+        if: ${{ !cancelled() }}
+        run: |
+          R="$RUNNER_TEMP/TestResults.xcresult"
+          [ -d "$R" ] || { echo "No result bundle (failed before tests ran)"; exit 0; }
+          xcrun xcresulttool get test-results summary --path "$R" > "$RUNNER_TEMP/summary.json"
+          jq -r '"\(.result): \(.passedTests) passed, \(.failedTests) failed, \(.skippedTests) skipped"' "$RUNNER_TEMP/summary.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          jq -r 'def esc: gsub("%";"%25") | gsub("\r";"%0D") | gsub("\n";"%0A");
+                 .testFailures[] | "::error title=\(.testIdentifierString | esc | gsub(":";"%3A") | gsub(",";"%2C"))::\(.failureText | esc)"' "$RUNNER_TEMP/summary.json"
+          jq -r '.testFailures[] | "- `\(.testIdentifierString)`: \(.failureText | gsub("\n";" / "))"' "$RUNNER_TEMP/summary.json" >> "$GITHUB_STEP_SUMMARY"

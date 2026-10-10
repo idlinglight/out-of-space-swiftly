@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Stamped by Scripts/build.sh through build settings; empty in builds made by Xcode. -->
+	<key>OOSSCommit</key>
+	<string>$(OOSS_COMMIT)</string>
+	<key>OOSSBranch</key>
+	<string>$(OOSS_BRANCH)</string>
+	<key>OOSSBuildDate</key>
+	<string>$(OOSS_BUILD_DATE)</string>
+	<key>OOSSDirty</key>
+	<string>$(OOSS_DIRTY)</string>
+</dict>
+</plist>
