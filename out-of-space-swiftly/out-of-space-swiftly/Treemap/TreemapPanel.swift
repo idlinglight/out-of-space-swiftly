@@ -128,13 +128,13 @@ private struct TreemapTiles: View, Equatable {
                 if tile.isSubdivided {
                     context.stroke(shape, with: .color(.primary.opacity(0.08)), lineWidth: 0.5)
                 }
+                guard let label = style.label else { continue }
                 if let header = tile.header {
-                    draw(label: style.label, detail: style.detail, in: header.insetBy(dx: 4, dy: 0),
+                    draw(label: label, detail: style.detail, in: header.insetBy(dx: 4, dy: 0),
                          font: .caption.weight(.medium), context: &context)
-                } else if !tile.isSubdivided, style.showsLabel, rect.width > 56, rect.height > 18 {
-                    // A subdivided folder without room for a header gets no label: its children fill it.
+                } else {
                     let band = CGRect(x: rect.minX + 4, y: rect.minY + 2, width: rect.width - 8, height: 14)
-                    draw(label: style.label, detail: rect.height > 34 ? style.detail : nil, in: band,
+                    draw(label: label, detail: rect.height > 34 ? style.detail : nil, in: band,
                          font: .caption2, context: &context)
                 }
             }
@@ -205,9 +205,10 @@ struct TreemapDrawing {
 
     struct TileStyle {
         var fill: Color
-        var label: String
+        /// Nil for a tile that shows no label (see `showsLabel(_:)`); of tens of thousands of tiles, only a
+        /// few hundred do, and formatting sizes for all of them made up most of a layout's time.
+        var label: String?
         var detail: String?
-        var showsLabel: Bool
     }
 
     let key: Key
@@ -247,10 +248,11 @@ struct TreemapDrawing {
         var index: [NodeID: Int] = [:]
         var remainders: [NodeID: Int] = [:]
         let styles = layout.tiles.enumerated().map { offset, tile in
+            let labeled = Self.showsLabel(tile)
             if case .remainder(let count) = tile.kind {
                 remainders[tile.id] = offset
-                return TileStyle(fill: TreemapPalette.remainder, label: "\(count.formatted()) smaller items",
-                                 detail: ByteCount.text(Int64(tile.weight)), showsLabel: true)
+                return TileStyle(fill: TreemapPalette.remainder, label: labeled ? "\(count.formatted()) smaller items" : nil,
+                                 detail: labeled ? ByteCount.text(Int64(tile.weight)) : nil)
             }
             if index[tile.id] == nil { index[tile.id] = offset }
             var name = tree.name(of: tile.id)
@@ -258,13 +260,14 @@ struct TreemapDrawing {
                 // A chain of single folders shows as one tile: "local › texlive › 2026basic".
                 let chain = Self.chain(endingAt: tile.id, below: layout.tiles[parent].id, in: tree)
                 if chain.count > 1 {
-                    name = chain.map { tree.name(of: $0) }.joined(separator: " › ")
+                    if labeled { name = chain.map { tree.name(of: $0) }.joined(separator: " › ") }
                     for member in chain where index[member] == nil { index[member] = offset }
                 }
             }
             let fill = tile.isContainer ? TreemapPalette.container(depth: tile.depth, subdivided: tile.isSubdivided)
                 : TreemapPalette.color(forFileNamed: tree.name(of: tile.id), kind: tree.kind(of: tile.id))
-            return TileStyle(fill: fill, label: name, detail: ByteCount.text(tree.size(of: tile.id)), showsLabel: true)
+            return TileStyle(fill: fill, label: labeled ? name : nil,
+                             detail: labeled ? ByteCount.text(tree.size(of: tile.id)) : nil)
         }
         self.layout = layout
         self.styles = styles
@@ -288,6 +291,12 @@ struct TreemapDrawing {
             }
             current = parent
         }
+    }
+
+    /// Whether a tile is labeled: a folder with a header, or a tile big enough for a line of text. A subdivided
+    /// folder without room for a header gets no label: its children fill it.
+    static func showsLabel(_ tile: TreemapTile<NodeID>) -> Bool {
+        tile.header != nil || (!tile.isSubdivided && tile.rect.width > 56 && tile.rect.height > 18)
     }
 
     /// Follows folders that hold nothing but one folder, so the treemap spends no header on each of them.
