@@ -83,7 +83,10 @@ nonisolated final class Scan: Sendable {
     }
 
     /// Runs the scan to the end (or until cancelled) and returns the finished tree. Call once.
-    func run() async -> ScanResult {
+    ///
+    /// Not on the caller's actor, as a `nonisolated` async function would be: summing and sorting a tree of a
+    /// million nodes must not hold up the main actor, and a busy main actor must not hold up the scan.
+    @concurrent func run() async -> ScanResult {
         let start = ContinuousClock.now
         let reporter = Task.detached { [engine, progressContinuation, options] in
             while !Task.isCancelled {

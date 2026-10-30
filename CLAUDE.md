@@ -5,7 +5,9 @@
   `out-of-space-swiftly/out-of-space-swiftlyTests/`. Both folders are synchronized groups: a new file there
   is part of the target without touching the project file. The module name is `out_of_space_swiftly`.
 - Build and test commands are in the README. Tests use Swift Testing. The app target defaults to
-  `@MainActor` isolation; scanner code that runs off the main actor is marked `nonisolated`.
+  `@MainActor` isolation; scanner code that runs off the main actor is marked `nonisolated`. With
+  Approachable Concurrency on, a `nonisolated` async function still runs on its caller's actor; one that
+  must leave the main actor is marked `@concurrent` (as `Scan.run()` is).
 - xcodebuild's console output leaves out Swift Testing failure messages. Run tests with
   `-resultBundlePath build/tests.xcresult` and read them with
   `xcrun xcresulttool get test-results summary --path build/tests.xcresult`.

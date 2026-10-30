@@ -57,13 +57,21 @@ extension ScanWindowModel {
         defer { setRefreshing(false) }
         for change in changes {
             guard !Task.isCancelled, self.tree === tree else { return }
-            // Lost events somewhere the tree cannot point to (the Data volume of `/` as a whole): only a
-            // full scan is sure to catch up.
-            let id = Self.directory(for: change.path, in: tree, rootPath: target.path) ?? (change.deep ? tree.root : nil)
-            guard let id else { continue }
+            let id: NodeID
+            switch Self.refreshTarget(for: change.path, in: tree, rootPath: target.path) {
+            case .directory(let directory):
+                id = directory
+            case .unseen:
+                continue
+            case .unmapped:
+                // Lost events somewhere the tree cannot point to (the Data volume of `/` as a whole): only a
+                // full scan is sure to catch up.
+                guard change.deep else { continue }
+                id = tree.root
+            }
             if change.deep {
                 let path = tree.relativePath(of: id)
-                let result = await Scan(root: tree.url(of: id)).run()
+                let result = await Scan(root: tree.url(of: id), options: scanOptions).run()
                 guard !Task.isCancelled, self.tree === tree, !result.wasCancelled else { return }
                 // The folder may have gone to the Trash, or its ID changed, while it was being scanned.
                 guard tree.node(atRelativePath: path) == id else { continue }
@@ -82,23 +90,24 @@ extension ScanWindowModel {
     private func refreshOneLevel(_ id: NodeID, in tree: ScanTree) async {
         let url = tree.url(of: id)
         let path = tree.relativePath(of: id)
-        var options = ScanOptions()
+        var options = scanOptions
         options.descends = false
         options.includesDataVolume = false
         let listing = await Scan(root: url, options: options).run()
         guard !Task.isCancelled, self.tree === tree, !listing.wasCancelled else { return }
+        // Busy folders are often changed back and forth, or rewritten as they were. Leaving the tree alone
+        // then spares the window a new layout.
+        guard !tree.hasSameEntries(id, as: listing.tree) else { return }
 
-        var known: [String: UInt64] = [:]
-        for child in tree.children(of: id) where tree.kind(of: child) == .directory {
-            known[tree.name(of: child)] = tree.node(child).fileID
-        }
+        var known: [String: NodeID] = [:]
+        for child in tree.children(of: id) { known[tree.name(of: child)] = child }
         var subtrees: [String: ScanTree] = [:]
         let entries = listing.tree
         for child in entries.children(of: entries.root)
         where entries.kind(of: child) == .directory && !entries.flags(of: child).contains(.notEntered) {
             let name = entries.name(of: child)
-            guard known[name] != entries.node(child).fileID else { continue }
-            let result = await Scan(root: url.appendingPathComponent(name, isDirectory: true)).run()
+            if let previous = known[name], tree.keepsSubtree(of: previous, for: entries.node(child)) { continue }
+            let result = await Scan(root: url.appendingPathComponent(name, isDirectory: true), options: scanOptions).run()
             guard !Task.isCancelled, self.tree === tree, !result.wasCancelled else { return }
             subtrees[name] = result.tree
         }
@@ -121,10 +130,21 @@ extension ScanWindowModel {
             .map { (path: $0.key, deep: $0.value) }
     }
 
-    /// The tree's directory for a changed folder: the folder itself, or its nearest ancestor that the scan
-    /// entered. For a scan of `/`, paths on the Data volume are mapped to where the tree shows them; the
-    /// group of folders found only there is not refreshed as a whole (its listing would repeat everything).
-    static func directory(for path: String, in tree: ScanTree, rootPath: String) -> NodeID? {
+    /// What to bring up to date for a changed folder.
+    enum RefreshTarget: Equatable {
+        /// List this directory again: the changed folder itself, or its nearest ancestor in the tree.
+        case directory(NodeID)
+        /// In or inside a folder the scan left out, or inside one it could not open, so nothing the window
+        /// shows can have changed. A folder that appears or goes away is reported for the folder that holds it.
+        case unseen
+        /// Somewhere the tree cannot point to: the group of folders found only on the Data volume, as a whole.
+        case unmapped
+    }
+
+    /// Where a changed folder is in the tree. For a scan of `/`, paths on the Data volume are mapped to where
+    /// the tree shows them; the group of folders found only there is not refreshed as a whole (its listing
+    /// would repeat everything).
+    static func refreshTarget(for path: String, in tree: ScanTree, rootPath: String) -> RefreshTarget {
         var path = path
         let data = "System/Volumes/Data"
         if rootPath == "/", path == data || path.hasPrefix(data + "/") {
@@ -134,14 +154,34 @@ extension ScanWindowModel {
             path = viaFirmlink ? rest : Scan.dataVolumeGroupName + (rest.isEmpty ? "" : "/" + rest)
         }
         var components = path.split(separator: "/").map(String.init)
+        let depth = components.count
         while true {
             if let id = tree.node(atRelativePath: components.joined(separator: "/")) {
-                let kind = tree.kind(of: id)
-                if kind == .group { return nil }
-                if kind == .directory, !tree.flags(of: id).contains(.notEntered) { return id }
+                switch tree.kind(of: id) {
+                case .group:
+                    return .unmapped
+                case .directory:
+                    let flags = tree.flags(of: id)
+                    // A cloud-only folder that gets downloaded is found by listing the folder that holds it.
+                    if flags.contains(.dataless) { break }
+                    // Left out on purpose: another app's container, a folder counted under another path.
+                    if flags.contains(.notEntered) { return .unseen }
+                    // Inside a folder that could not be opened, nothing can be seen. The folder itself is listed
+                    // again: its permissions may have changed.
+                    if components.count < depth, couldNotOpen(id, in: tree) { return .unseen }
+                    return .directory(id)
+                default:
+                    break
+                }
             }
-            if components.isEmpty { return nil }
+            if components.isEmpty { return .unmapped }
             components.removeLast()
         }
+    }
+
+    /// A folder the scan could not open for lack of permission.
+    private static func couldNotOpen(_ id: NodeID, in tree: ScanTree) -> Bool {
+        guard tree.node(id).childCount == 0, let code = tree.error(of: id) else { return false }
+        return [.noPermission, .protectedByMacOS].contains(ScanFailure(errno: code))
     }
 }

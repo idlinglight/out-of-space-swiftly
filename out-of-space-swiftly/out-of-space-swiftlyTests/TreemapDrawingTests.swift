@@ -44,6 +44,26 @@ struct TreemapDrawingTests {
         #expect(smallOutline.rect == drawing.layout.tiles[rootRemainder].rect)
     }
 
+    @Test func onlyTilesWithRoomForALabelGetOne() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("big.bin", size: 4_000_000)
+        for index in 0 ..< 40 { try fixture.file("small/\(index).bin", size: 4_000) }
+        let (tree, drawing) = await drawing(of: fixture)
+        let file = try #require(tree.node(atRelativePath: "big.bin"))
+        let big = try #require(drawing.tileIndex[file])
+
+        #expect(drawing.styles[big].label == "big.bin")
+        #expect(drawing.styles[big].detail != nil)
+        let unlabeled = drawing.layout.tiles.indices.dropFirst().filter { drawing.styles[$0].label == nil }
+        #expect(!unlabeled.isEmpty)
+        for index in unlabeled {
+            let tile = drawing.layout.tiles[index]
+            #expect(tile.header == nil)
+            #expect(tile.isSubdivided || tile.rect.width <= 56 || tile.rect.height <= 18)
+            #expect(drawing.styles[index].detail == nil)
+        }
+    }
+
     @Test func anItemWithNoAreaAtTheZoomLevelGetsNoOutline() async throws {
         let fixture = try FixtureTree()
         try fixture.file("big.bin", size: 4_000_000)

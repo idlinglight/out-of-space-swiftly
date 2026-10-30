@@ -4,7 +4,11 @@ import SwiftUI
 struct ScanView: View {
     let model: ScanWindowModel
     let choose: (URL) -> Void
+    #if DEBUG
+    @State private var showsInspector = DebugAids.showsInspector
+    #else
     @State private var showsInspector = true
+    #endif
 
     var body: some View {
         NavigationSplitView {
@@ -16,7 +20,7 @@ struct ScanView: View {
                 Divider()
                 TreemapPanel(model: model)
                 Divider()
-                StatusBar(model: model)
+                StatusBar(model: model, showsItem: !showsInspector)
             }
             .inspector(isPresented: $showsInspector) {
                 InspectorView(model: model)
@@ -103,41 +107,85 @@ private struct ZoomPathBar: View {
     }
 }
 
-/// What is under the pointer, or else what is selected.
+/// The scan's state. The selection and the item under the pointer have their places in the inspector; with the
+/// inspector hidden, one of them shows here (the item under the pointer, or else the selection, marked as
+/// in the inspector) on the left, with the scan's state kept on the right, so neither takes the other's place.
 private struct StatusBar: View {
     let model: ScanWindowModel
+    let showsItem: Bool
 
     var body: some View {
         HStack(spacing: 8) {
-            if let tree = model.tree, let id = model.hovered ?? model.selection {
-                Text(tree.name(of: id)).fontWeight(.medium)
-                Text(ByteCount.text(tree.size(of: id))).monospacedDigit()
-                Text(ByteCount.share(tree.size(of: id), of: tree.size(of: model.zoom)))
-                    .foregroundStyle(.secondary)
-                Text(tree.path(of: id))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-            } else if let summary = model.lastScan {
-                Text(summaryText(summary)).foregroundStyle(.secondary)
+            if showsItem {
+                if let tree = model.tree, let id = model.hovered ?? model.selection {
+                    OutlineSwatch(isSelection: model.hovered == nil)
+                    Text(tree.name(of: id)).fontWeight(.medium)
+                    Text(ByteCount.text(tree.size(of: id))).monospacedDigit()
+                    Text(ByteCount.share(tree.size(of: id), of: tree.size(of: model.zoom)))
+                        .foregroundStyle(.secondary)
+                    Text(tree.path(of: id))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+                Spacer(minLength: 16)
+                summary(includesDuration: false)
+            } else {
+                summary(includesDuration: true)
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
-            if model.isRefreshing {
-                ProgressView().controlSize(.small)
-                Text("Updating…").foregroundStyle(.secondary)
-            }
+            UpdatingIndicator(isRefreshing: model.isRefreshing)
         }
         .font(.callout)
         .padding(.horizontal, 10)
         .frame(height: 26)
     }
 
-    private func summaryText(_ summary: ScanWindowModel.ScanSummary) -> String {
-        var text = "\(summary.files.formatted()) files, scanned in \(summary.duration.formatted(.units(allowed: [.minutes, .seconds], fractionalPart: .show(length: 1))))"
+    @ViewBuilder private func summary(includesDuration: Bool) -> some View {
+        if let summary = model.lastScan {
+            Text(summaryText(summary, includesDuration: includesDuration))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .layoutPriority(1)
+        }
+    }
+
+    private func summaryText(_ summary: ScanWindowModel.ScanSummary, includesDuration: Bool) -> String {
+        var text = "\(summary.files.formatted()) files"
+        if includesDuration {
+            text += ", scanned in \(summary.duration.formatted(.units(allowed: [.minutes, .seconds], fractionalPart: .show(length: 1))))"
+        }
         if summary.failures > 0 {
             text += ", \(summary.failures.formatted()) \(summary.failures == 1 ? "folder" : "folders") not readable"
         }
         if summary.wasCancelled { text += ", stopped early" }
         return text
+    }
+}
+
+/// Says so while background updates run, once they have taken a moment: most are over long before, and an
+/// indicator that blinks with each of them only distracts. Its place stays reserved.
+private struct UpdatingIndicator: View {
+    let isRefreshing: Bool
+    @State private var isShown = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if isShown {
+                ProgressView().controlSize(.small)
+            } else {
+                Color.clear.frame(width: 16, height: 16)
+            }
+            Text("Updating…").foregroundStyle(.secondary).opacity(isShown ? 1 : 0)
+        }
+        .accessibilityHidden(!isShown)
+        .task(id: isRefreshing) {
+            guard isRefreshing else {
+                isShown = false
+                return
+            }
+            try? await Task.sleep(for: .seconds(1))
+            if !Task.isCancelled { isShown = true }
+        }
     }
 }

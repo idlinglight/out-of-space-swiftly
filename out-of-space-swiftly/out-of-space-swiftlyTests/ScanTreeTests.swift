@@ -92,6 +92,83 @@ struct ScanTreeTests {
         #expect(tree.parent(of: keptDeep) == kept)
     }
 
+    @Test func aListingTellsWhetherAnythingThatShowsChanged() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("folder/a.bin", size: 30_000)
+        try fixture.file("folder/b.bin", size: 10_000)
+        try fixture.file("folder/sub/c.bin", size: 5_000)
+        try fixture.directory("folder/locked")
+        try fixture.setPermissions("folder/locked", 0)
+        var tree = await scan(fixture.root)
+        func listingShowsTheSame() async throws -> Bool {
+            let folder = try #require(tree.node(atRelativePath: "folder"))
+            var options = ScanOptions.fixture
+            options.descends = false
+            return tree.hasSameEntries(folder, as: await Scan(root: fixture.url("folder"), options: options).run().tree)
+        }
+
+        // The folder that could not be read keeps its error: not something the listing sees.
+        #expect(try await listingShowsTheSame())
+
+        // A file rewritten as it was: a new file of the same size put in its place.
+        let rewritten = try fixture.file("b.tmp", size: 10_000)
+        #expect(rename(rewritten.path, fixture.url("folder/b.bin").path) == 0)
+        #expect(try await listingShowsTheSame())
+
+        try fixture.file("folder/a.bin", size: 60_000)
+        #expect(try await !listingShowsTheSame(), "a file grew")
+        tree = await scan(fixture.root)
+
+        try fixture.file("folder/new.bin", size: 1_000)
+        #expect(try await !listingShowsTheSame(), "a file was added")
+        tree = await scan(fixture.root)
+
+        try FileManager.default.removeItem(at: fixture.url("folder/b.bin"))
+        #expect(try await !listingShowsTheSame(), "a file went away")
+        tree = await scan(fixture.root)
+
+        try FileManager.default.removeItem(at: fixture.url("folder/sub"))
+        try fixture.directory("folder/sub")
+        #expect(try await !listingShowsTheSame(), "another folder of the same name")
+    }
+
+    @Test func aCloudOnlyFolderDownloadedSinceIsScannedAnew() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("cloud/file.bin", size: 50_000)
+        try fixture.file("local.bin", size: 10_000)
+        let tree = await scan(fixture.root)
+        // A fixture cannot make a folder cloud-only; the tree is told it was one when it was scanned.
+        let cloud = try #require(tree.node(atRelativePath: "cloud"))
+        tree.update(cloud) { $0.flags.formUnion([.notEntered, .dataless]) }
+        var options = ScanOptions.fixture
+        options.descends = false
+        let listing = await Scan(root: fixture.root, options: options).run().tree
+        let entry = try #require(listing.node(atRelativePath: "cloud"))
+
+        #expect(!tree.keepsSubtree(of: cloud, for: listing.node(entry)))
+        #expect(!tree.hasSameEntries(tree.root, as: listing))
+        tree.refresh(tree.root, listing: listing, subtrees: ["cloud": await scan(fixture.url("cloud"))])
+        let fresh = await scan(fixture.root)
+        let downloaded = try #require(tree.node(atRelativePath: "cloud"))
+        #expect(!tree.flags(of: downloaded).contains(.dataless))
+        #expect(tree.node(atRelativePath: "cloud/file.bin") != nil)
+        #expect(tree.size(of: tree.root) == fresh.size(of: fresh.root))
+    }
+
+    @Test func aFolderThatStillCannotBeReadShowsTheSame() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("locked/file.bin", size: 1_000)
+        try fixture.setPermissions("locked", 0)
+        let tree = await scan(fixture.root)
+        let locked = try #require(tree.node(atRelativePath: "locked"))
+        var options = ScanOptions.fixture
+        options.descends = false
+        let listing = await Scan(root: fixture.url("locked"), options: options).run().tree
+
+        #expect(listing.error(of: listing.root) != nil)
+        #expect(tree.hasSameEntries(locked, as: listing))
+    }
+
     @Test func graftingARescanMatchesAFullScan() async throws {
         let fixture = try FixtureTree()
         try fixture.file("docs/one.bin", size: 40_000)

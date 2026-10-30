@@ -257,8 +257,7 @@ nonisolated final class ScanTree: @unchecked Sendable {
         for child in listing.childRange(of: listing.root) {
             let entry = listing.nodes[child]
             let name = listing.names[child]
-            if entry.kind == .directory, !entry.flags.contains(.notEntered), let previous = kept[name],
-               nodes[Int(previous)].fileID == entry.fileID {
+            if let previous = kept[name], keepsSubtree(of: previous, for: entry) {
                 moved.append((previous, append(nodes[Int(previous)], named: name)))
                 continue
             }
@@ -294,6 +293,48 @@ nonisolated final class ScanTree: @unchecked Sendable {
         sortChildren(of: target)
         propagate(from: target, size: size - old.size, count: count - old.descendantCount)
     }
+
+    /// Whether `refresh` keeps the node `previous` and what was found below it for `entry`, the entry of the
+    /// same name in a new listing: a folder to enter that is still the same folder (file ID). One that was in
+    /// the cloud only before is scanned anew, as it may have been downloaded; one counted under another path
+    /// stays as it was.
+    func keepsSubtree(of previous: NodeID, for entry: Node) -> Bool {
+        let node = nodes[Int(previous)]
+        return entry.kind == .directory && !entry.flags.contains(.notEntered) && node.kind == .directory
+            && node.fileID == entry.fileID && !node.flags.contains(.dataless)
+    }
+
+    /// Whether `listing`, a finished one-level scan of `target`, shows what the tree has there already: the
+    /// same error, folders `refresh` keeps, and the same other entries by name, kind, flags and size on disk.
+    /// `refresh` would then change nothing that shows.
+    func hasSameEntries(_ target: NodeID, as listing: ScanTree) -> Bool {
+        guard errors[target] == listing.errors[listing.root] else { return false }
+        var current: [String: NodeID] = [:]
+        for child in childRange(of: target) where !nodes[child].flags.contains(.removed) && nodes[child].kind != .group {
+            current[names[child]] = NodeID(child)
+        }
+        let entries = listing.childRange(of: listing.root)
+        guard entries.count == current.count else { return false }
+        for child in entries {
+            guard let id = current[listing.names[child]] else { return false }
+            let (old, new) = (nodes[Int(id)], listing.nodes[child])
+            if new.kind == .directory, !new.flags.contains(.notEntered) {
+                // A folder to enter that is not kept is scanned anew.
+                guard keepsSubtree(of: id, for: new) else { return false }
+            } else {
+                guard old.kind == new.kind,
+                      old.flags.intersection(Self.listedFlags) == new.flags.intersection(Self.listedFlags),
+                      old.allocatedSize == new.allocatedSize, old.logicalSize == new.logicalSize,
+                      errors[id] == listing.errors[NodeID(child)] else { return false }
+            }
+        }
+        return true
+    }
+
+    /// The flags a one-level listing sets for an entry just as a full scan does. The others depend on what else
+    /// the scan saw (duplicates, folders reached twice) or come from reading the folder itself (failed, slow).
+    private static let listedFlags: Flags = [.notEntered, .protected, .dataless, .sparse, .compressed, .purgeable,
+                                             .mayShareBlocks, .firmlink, .hardLinked, .sharesAllBlocks]
 
     /// Adds a change of size and count to every ancestor of `id`, moving each changed node to its place
     /// among its siblings.

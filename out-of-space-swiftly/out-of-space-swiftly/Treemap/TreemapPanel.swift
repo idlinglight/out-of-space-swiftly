@@ -24,6 +24,8 @@ private struct TreemapContent: View {
     @State private var relayout: Task<Void, Never>?
     /// The tile under the pointer, which may be a "smaller items" tile (that has no node of its own).
     @State private var hoveredTile: Int?
+    /// Where the pointer is, while it is over the treemap; a new layout may put another item there.
+    @State private var pointer: CGPoint?
 
     var body: some View {
         ZStack {
@@ -38,11 +40,10 @@ private struct TreemapContent: View {
         .onContinuousHover { phase in
             switch phase {
             case .active(let location):
-                let index = tile(at: location)
-                if hoveredTile != index { hoveredTile = index }
-                let id = index.flatMap { current?.layout.tiles[$0].id }
-                if model.hovered != id { model.hovered = id }
+                pointer = location
+                hover(at: location, in: current)
             case .ended:
+                pointer = nil
                 hoveredTile = nil
                 model.hovered = nil
             }
@@ -62,7 +63,7 @@ private struct TreemapContent: View {
         .onChange(of: key, initial: true) { _, key in
             relayout?.cancel()
             guard let drawing, drawing.key.version == key.version, drawing.key.zoom == key.zoom else {
-                drawing = TreemapDrawing(tree: tree, key: key)
+                show(TreemapDrawing(tree: tree, key: key))
                 return
             }
             // While the window is being resized, the last drawing is shown scaled; the layout is redone
@@ -70,7 +71,7 @@ private struct TreemapContent: View {
             relayout = Task {
                 try? await Task.sleep(for: .milliseconds(120))
                 guard !Task.isCancelled else { return }
-                self.drawing = TreemapDrawing(tree: tree, key: key)
+                show(TreemapDrawing(tree: tree, key: key))
             }
         }
     }
@@ -82,8 +83,22 @@ private struct TreemapContent: View {
         return drawing
     }
 
-    private func tile(at location: CGPoint) -> Int? {
-        guard let drawing = current else { return nil }
+    /// Replaces the drawing. The pointer stays where it was, but the tiles may have moved under it (a
+    /// background update, a resize), so what it points at is looked up again.
+    private func show(_ drawing: TreemapDrawing) {
+        self.drawing = drawing
+        if let pointer { hover(at: pointer, in: drawing) }
+    }
+
+    private func hover(at location: CGPoint, in drawing: TreemapDrawing?) {
+        let index = tile(at: location, in: drawing)
+        if hoveredTile != index { hoveredTile = index }
+        let id = index.flatMap { drawing?.layout.tiles[$0].id }
+        if model.hovered != id { model.hovered = id }
+    }
+
+    private func tile(at location: CGPoint, in drawing: TreemapDrawing?) -> Int? {
+        guard let drawing else { return nil }
         let point = CGPoint(x: location.x * drawing.key.size.width / max(key.size.width, 1),
                             y: location.y * drawing.key.size.height / max(key.size.height, 1))
         guard let index = drawing.layout.tileIndex(at: point), index > 0 else { return nil }
@@ -91,7 +106,7 @@ private struct TreemapContent: View {
     }
 
     private func node(at location: CGPoint) -> NodeID? {
-        tile(at: location).flatMap { current?.layout.tiles[$0].id }
+        tile(at: location, in: current).flatMap { current?.layout.tiles[$0].id }
     }
 }
 
@@ -113,13 +128,13 @@ private struct TreemapTiles: View, Equatable {
                 if tile.isSubdivided {
                     context.stroke(shape, with: .color(.primary.opacity(0.08)), lineWidth: 0.5)
                 }
+                guard let label = style.label else { continue }
                 if let header = tile.header {
-                    draw(label: style.label, detail: style.detail, in: header.insetBy(dx: 4, dy: 0),
+                    draw(label: label, detail: style.detail, in: header.insetBy(dx: 4, dy: 0),
                          font: .caption.weight(.medium), context: &context)
-                } else if !tile.isSubdivided, style.showsLabel, rect.width > 56, rect.height > 18 {
-                    // A subdivided folder without room for a header gets no label: its children fill it.
+                } else {
                     let band = CGRect(x: rect.minX + 4, y: rect.minY + 2, width: rect.width - 8, height: 14)
-                    draw(label: style.label, detail: rect.height > 34 ? style.detail : nil, in: band,
+                    draw(label: label, detail: rect.height > 34 ? style.detail : nil, in: band,
                          font: .caption2, context: &context)
                 }
             }
@@ -190,9 +205,10 @@ struct TreemapDrawing {
 
     struct TileStyle {
         var fill: Color
-        var label: String
+        /// Nil for a tile that shows no label (see `showsLabel(_:)`); of tens of thousands of tiles, only a
+        /// few hundred do, and formatting sizes for all of them made up most of a layout's time.
+        var label: String?
         var detail: String?
-        var showsLabel: Bool
     }
 
     let key: Key
@@ -232,10 +248,11 @@ struct TreemapDrawing {
         var index: [NodeID: Int] = [:]
         var remainders: [NodeID: Int] = [:]
         let styles = layout.tiles.enumerated().map { offset, tile in
+            let labeled = Self.showsLabel(tile)
             if case .remainder(let count) = tile.kind {
                 remainders[tile.id] = offset
-                return TileStyle(fill: TreemapPalette.remainder, label: "\(count.formatted()) smaller items",
-                                 detail: ByteCount.text(Int64(tile.weight)), showsLabel: true)
+                return TileStyle(fill: TreemapPalette.remainder, label: labeled ? "\(count.formatted()) smaller items" : nil,
+                                 detail: labeled ? ByteCount.text(Int64(tile.weight)) : nil)
             }
             if index[tile.id] == nil { index[tile.id] = offset }
             var name = tree.name(of: tile.id)
@@ -243,13 +260,14 @@ struct TreemapDrawing {
                 // A chain of single folders shows as one tile: "local › texlive › 2026basic".
                 let chain = Self.chain(endingAt: tile.id, below: layout.tiles[parent].id, in: tree)
                 if chain.count > 1 {
-                    name = chain.map { tree.name(of: $0) }.joined(separator: " › ")
+                    if labeled { name = chain.map { tree.name(of: $0) }.joined(separator: " › ") }
                     for member in chain where index[member] == nil { index[member] = offset }
                 }
             }
             let fill = tile.isContainer ? TreemapPalette.container(depth: tile.depth, subdivided: tile.isSubdivided)
                 : TreemapPalette.color(forFileNamed: tree.name(of: tile.id), kind: tree.kind(of: tile.id))
-            return TileStyle(fill: fill, label: name, detail: ByteCount.text(tree.size(of: tile.id)), showsLabel: true)
+            return TileStyle(fill: fill, label: labeled ? name : nil,
+                             detail: labeled ? ByteCount.text(tree.size(of: tile.id)) : nil)
         }
         self.layout = layout
         self.styles = styles
@@ -273,6 +291,12 @@ struct TreemapDrawing {
             }
             current = parent
         }
+    }
+
+    /// Whether a tile is labeled: a folder with a header, or a tile big enough for a line of text. A subdivided
+    /// folder without room for a header gets no label: its children fill it.
+    static func showsLabel(_ tile: TreemapTile<NodeID>) -> Bool {
+        tile.header != nil || (!tile.isSubdivided && tile.rect.width > 56 && tile.rect.height > 18)
     }
 
     /// Follows folders that hold nothing but one folder, so the treemap spends no header on each of them.

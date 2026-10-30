@@ -13,12 +13,14 @@ Built locally, not distributed.
 - The result is a treemap of the folder: every file a rectangle sized by the space it takes on disk,
   colored by what it holds (images, video, audio, archives, documents, code, applications). Folders nest
   inside with their name and size; a chain of single folders shares one header.
-- Hover to see an item in the status bar, click to select it, double-click to zoom in one level; the path
-  bar and Zoom Out (⌘↑) go back up. The outline beside the treemap lists the same level, sortable by name,
-  size or item count, and shares the selection.
+- Click to select an item, double-click to zoom in one level; the path bar and Zoom Out (⌘↑) go back up.
+  The outline beside the treemap lists the same level, sortable by name, size or item count, and shares
+  the selection.
 - The inspector shows the selection's size, place and anything special about it (a clone, a cloud-only
   folder, a folder macOS protects, one that could not be read). For a whole volume it compares what the
-  scan found with what the volume says it uses.
+  scan found with what the volume says it uses. Below that, always in view, is the item under the
+  pointer; with the inspector hidden, the status bar shows it (or else the selection). The status bar
+  tells how the scan went.
 - Show in Finder, Copy Path and Move to Trash (after asking) from the inspector, the context menu or the
   Scan menu.
 - Files changed on disk after the scan are picked up: the folders concerned are scanned again in the
