@@ -37,8 +37,9 @@ precisely. It should look like it belongs on macOS: quiet, with color reserved f
   menu acts on the item under the pointer.
 - Hovering names an item in the inspector, in a section of its own kept in view below the selection, each
   headed with a small copy of its outline in the treemap. The status bar tells the scan's state; with the
-  inspector hidden, it also shows the item under the pointer, in a part of its own. Item and scan state
-  never share a place, so neither takes the other's away (a busy folder updates every few seconds).
+  inspector hidden, it also shows the item under the pointer (or else the selection, marked with the same
+  outline copies), in a part of its own. Item and scan state never share a place, so neither takes the
+  other's away (a busy folder updates every few seconds).
 - Background updates keep the hover and the selection on their items, and the item under the pointer is
   looked up again when a new layout moves the tiles.
 

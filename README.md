@@ -19,7 +19,8 @@ Built locally, not distributed.
 - The inspector shows the selection's size, place and anything special about it (a clone, a cloud-only
   folder, a folder macOS protects, one that could not be read). For a whole volume it compares what the
   scan found with what the volume says it uses. Below that, always in view, is the item under the
-  pointer; with the inspector hidden, the status bar shows it. The status bar tells how the scan went.
+  pointer; with the inspector hidden, the status bar shows it (or else the selection). The status bar
+  tells how the scan went.
 - Show in Finder, Copy Path and Move to Trash (after asking) from the inspector, the context menu or the
   Scan menu.
 - Files changed on disk after the scan are picked up: the folders concerned are scanned again in the

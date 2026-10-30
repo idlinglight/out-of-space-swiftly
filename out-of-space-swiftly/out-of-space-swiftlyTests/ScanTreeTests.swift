@@ -132,6 +132,29 @@ struct ScanTreeTests {
         #expect(try await !listingShowsTheSame(), "another folder of the same name")
     }
 
+    @Test func aCloudOnlyFolderDownloadedSinceIsScannedAnew() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("cloud/file.bin", size: 50_000)
+        try fixture.file("local.bin", size: 10_000)
+        let tree = await scan(fixture.root)
+        // A fixture cannot make a folder cloud-only; the tree is told it was one when it was scanned.
+        let cloud = try #require(tree.node(atRelativePath: "cloud"))
+        tree.update(cloud) { $0.flags.formUnion([.notEntered, .dataless]) }
+        var options = ScanOptions.fixture
+        options.descends = false
+        let listing = await Scan(root: fixture.root, options: options).run().tree
+        let entry = try #require(listing.node(atRelativePath: "cloud"))
+
+        #expect(!tree.keepsSubtree(of: cloud, for: listing.node(entry)))
+        #expect(!tree.hasSameEntries(tree.root, as: listing))
+        tree.refresh(tree.root, listing: listing, subtrees: ["cloud": await scan(fixture.url("cloud"))])
+        let fresh = await scan(fixture.root)
+        let downloaded = try #require(tree.node(atRelativePath: "cloud"))
+        #expect(!tree.flags(of: downloaded).contains(.dataless))
+        #expect(tree.node(atRelativePath: "cloud/file.bin") != nil)
+        #expect(tree.size(of: tree.root) == fresh.size(of: fresh.root))
+    }
+
     @Test func aFolderThatStillCannotBeReadShowsTheSame() async throws {
         let fixture = try FixtureTree()
         try fixture.file("locked/file.bin", size: 1_000)

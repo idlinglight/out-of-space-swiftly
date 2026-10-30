@@ -141,8 +141,8 @@ private struct PointerSection: View {
 }
 
 /// A small copy of the outline the treemap draws around the selection or the item under the pointer, to tie
-/// a heading to it.
-private struct OutlineSwatch: View {
+/// a heading or a line to it.
+struct OutlineSwatch: View {
     let isSelection: Bool
 
     var body: some View {

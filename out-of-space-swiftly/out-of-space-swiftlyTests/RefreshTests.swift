@@ -35,17 +35,25 @@ struct RefreshTests {
         try fixture.file("Library/Containers/app/Data/file.bin", size: 1_000)
         try fixture.file("Library/locked/file.bin", size: 1_000)
         try fixture.setPermissions("Library/locked", 0)
+        try fixture.file("Library/cloud/file.bin", size: 1_000)
         var options = ScanOptions.fixture
         options.protectedPaths = [fixture.url("Library/Containers").path]
         let tree = await Scan(root: fixture.root, options: options).run().tree
         let library = try #require(tree.node(atRelativePath: "Library"))
+        let locked = try #require(tree.node(atRelativePath: "Library/locked"))
+        // A fixture cannot make a folder cloud-only; the tree is told so instead.
+        let cloud = try #require(tree.node(atRelativePath: "Library/cloud"))
+        tree.update(cloud) { $0.flags.formUnion([.notEntered, .dataless]) }
         let root = fixture.root.path
 
         #expect(ScanWindowModel.refreshTarget(for: "Library/Containers", in: tree, rootPath: root) == .unseen)
         #expect(ScanWindowModel.refreshTarget(for: "Library/Containers/app/Data", in: tree, rootPath: root) == .unseen)
-        #expect(ScanWindowModel.refreshTarget(for: "Library/locked", in: tree, rootPath: root) == .unseen)
         #expect(ScanWindowModel.refreshTarget(for: "Library/locked/new/deeper", in: tree, rootPath: root) == .unseen)
-        // Such a folder appearing or going away is reported for the folder that holds it.
+        // The folder that could not be opened is listed again for a change of its own (its permissions).
+        #expect(ScanWindowModel.refreshTarget(for: "Library/locked", in: tree, rootPath: root) == .directory(locked))
+        // A cloud-only folder being downloaded is found by listing the folder that holds it.
+        #expect(ScanWindowModel.refreshTarget(for: "Library/cloud/sub", in: tree, rootPath: root) == .directory(library))
+        // Such folders appearing or going away are reported for the folder that holds them.
         #expect(ScanWindowModel.refreshTarget(for: "Library", in: tree, rootPath: root) == .directory(library))
     }
 

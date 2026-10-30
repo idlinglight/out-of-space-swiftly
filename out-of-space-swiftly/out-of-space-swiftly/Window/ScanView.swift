@@ -20,7 +20,7 @@ struct ScanView: View {
                 Divider()
                 TreemapPanel(model: model)
                 Divider()
-                StatusBar(model: model, showsPointer: !showsInspector)
+                StatusBar(model: model, showsItem: !showsInspector)
             }
             .inspector(isPresented: $showsInspector) {
                 InspectorView(model: model)
@@ -107,16 +107,18 @@ private struct ZoomPathBar: View {
     }
 }
 
-/// The scan's state. The item under the pointer has its place in the inspector; with the inspector hidden it
-/// shows here, on the left, with the scan's state kept on the right, so neither takes the other's place.
+/// The scan's state. The selection and the item under the pointer have their places in the inspector; with the
+/// inspector hidden, one of them shows here (the item under the pointer, or else the selection, marked as
+/// in the inspector) on the left, with the scan's state kept on the right, so neither takes the other's place.
 private struct StatusBar: View {
     let model: ScanWindowModel
-    let showsPointer: Bool
+    let showsItem: Bool
 
     var body: some View {
         HStack(spacing: 8) {
-            if showsPointer {
-                if let tree = model.tree, let id = model.hovered {
+            if showsItem {
+                if let tree = model.tree, let id = model.hovered ?? model.selection {
+                    OutlineSwatch(isSelection: model.hovered == nil)
                     Text(tree.name(of: id)).fontWeight(.medium)
                     Text(ByteCount.text(tree.size(of: id))).monospacedDigit()
                     Text(ByteCount.share(tree.size(of: id), of: tree.size(of: model.zoom)))

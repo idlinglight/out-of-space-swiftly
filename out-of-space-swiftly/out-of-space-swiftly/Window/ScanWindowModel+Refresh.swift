@@ -99,16 +99,14 @@ extension ScanWindowModel {
         // then spares the window a new layout.
         guard !tree.hasSameEntries(id, as: listing.tree) else { return }
 
-        var known: [String: UInt64] = [:]
-        for child in tree.children(of: id) where tree.kind(of: child) == .directory {
-            known[tree.name(of: child)] = tree.node(child).fileID
-        }
+        var known: [String: NodeID] = [:]
+        for child in tree.children(of: id) { known[tree.name(of: child)] = child }
         var subtrees: [String: ScanTree] = [:]
         let entries = listing.tree
         for child in entries.children(of: entries.root)
         where entries.kind(of: child) == .directory && !entries.flags(of: child).contains(.notEntered) {
             let name = entries.name(of: child)
-            guard known[name] != entries.node(child).fileID else { continue }
+            if let previous = known[name], tree.keepsSubtree(of: previous, for: entries.node(child)) { continue }
             let result = await Scan(root: url.appendingPathComponent(name, isDirectory: true), options: scanOptions).run()
             guard !Task.isCancelled, self.tree === tree, !result.wasCancelled else { return }
             subtrees[name] = result.tree
@@ -136,8 +134,8 @@ extension ScanWindowModel {
     enum RefreshTarget: Equatable {
         /// List this directory again: the changed folder itself, or its nearest ancestor in the tree.
         case directory(NodeID)
-        /// Inside a folder the scan did not look into, so nothing the window shows can have changed. A folder
-        /// that appears or goes away is reported for the folder that holds it.
+        /// In or inside a folder the scan left out, or inside one it could not open, so nothing the window
+        /// shows can have changed. A folder that appears or goes away is reported for the folder that holds it.
         case unseen
         /// Somewhere the tree cannot point to: the group of folders found only on the Data volume, as a whole.
         case unmapped
@@ -156,12 +154,24 @@ extension ScanWindowModel {
             path = viaFirmlink ? rest : Scan.dataVolumeGroupName + (rest.isEmpty ? "" : "/" + rest)
         }
         var components = path.split(separator: "/").map(String.init)
+        let depth = components.count
         while true {
             if let id = tree.node(atRelativePath: components.joined(separator: "/")) {
                 switch tree.kind(of: id) {
-                case .group: return .unmapped
-                case .directory: return isUnseen(id, in: tree) ? .unseen : .directory(id)
-                default: break
+                case .group:
+                    return .unmapped
+                case .directory:
+                    let flags = tree.flags(of: id)
+                    // A cloud-only folder that gets downloaded is found by listing the folder that holds it.
+                    if flags.contains(.dataless) { break }
+                    // Left out on purpose: another app's container, a folder counted under another path.
+                    if flags.contains(.notEntered) { return .unseen }
+                    // Inside a folder that could not be opened, nothing can be seen. The folder itself is listed
+                    // again: its permissions may have changed.
+                    if components.count < depth, couldNotOpen(id, in: tree) { return .unseen }
+                    return .directory(id)
+                default:
+                    break
                 }
             }
             if components.isEmpty { return .unmapped }
@@ -169,10 +179,8 @@ extension ScanWindowModel {
         }
     }
 
-    /// A folder the scan left out (another app's container, a cloud-only folder, one counted under another
-    /// path), or one it could not open for lack of permission, which a change inside it does not fix.
-    private static func isUnseen(_ id: NodeID, in tree: ScanTree) -> Bool {
-        if tree.flags(of: id).contains(.notEntered) { return true }
+    /// A folder the scan could not open for lack of permission.
+    private static func couldNotOpen(_ id: NodeID, in tree: ScanTree) -> Bool {
         guard tree.node(id).childCount == 0, let code = tree.error(of: id) else { return false }
         return [.noPermission, .protectedByMacOS].contains(ScanFailure(errno: code))
     }
