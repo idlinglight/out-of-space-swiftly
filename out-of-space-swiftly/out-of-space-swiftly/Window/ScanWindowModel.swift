@@ -60,6 +60,8 @@ final class ScanWindowModel {
     /// Folders changed on disk are being brought up to date in the background (see `+Refresh`).
     private(set) var isRefreshing = false
 
+    /// For every scan the window runs, background updates included. Tests leave out the protected paths.
+    @ObservationIgnored var scanOptions = ScanOptions()
     @ObservationIgnored private var scan: Scan?
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored var watchTask: Task<Void, Never>?
@@ -94,7 +96,7 @@ final class ScanWindowModel {
         volumeUsage = nil
         // Watching from the start catches what changes while the scan runs; it is caught up on afterwards.
         watch(target)
-        let scan = Scan(root: target.url)
+        let scan = Scan(root: target.url, options: scanOptions)
         self.scan = scan
         scanTask = Task { [weak self] in
             let updates = Task { [weak self] in
@@ -169,19 +171,21 @@ final class ScanWindowModel {
         isRefreshing = false
     }
 
-    /// Changes the tree, in place or for a new one, keeping zoom and selection where their paths still
+    /// Changes the tree, in place or for a new one, keeping zoom, selection and hover where their paths still
     /// exist. IDs may change, so nothing waiting on an old ID (such as a Trash confirmation) survives.
     func updateTree(_ change: (ScanTree) -> ScanTree) {
         guard let current = tree else { return }
         let zoomPath = current.relativePath(of: zoom)
         let selectionPath = selection.map { current.relativePath(of: $0) }
+        let hoveredPath = hovered.map { current.relativePath(of: $0) }
         let updated = change(current)
         updated.compactIfWasteful()
         tree = updated
         treeVersion += 1
         zoom = Self.nearest(zoomPath, in: updated)
         selection = selectionPath.flatMap { updated.node(atRelativePath: $0) }
-        hovered = nil
+        // The treemap looks again at what is under the pointer once its layout is redone.
+        hovered = hoveredPath.flatMap { updated.node(atRelativePath: $0) }
         pendingTrash = nil
     }
 

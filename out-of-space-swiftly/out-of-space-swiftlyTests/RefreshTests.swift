@@ -30,6 +30,38 @@ struct RefreshTests {
         #expect(ScanWindowModel.directory(for: "", in: tree, rootPath: fixture.root.path) == tree.root)
     }
 
+    @Test func anUpdateKeepsHoverAndSelectionOnTheirItems() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("a/one.bin", size: 40_000)
+        try fixture.file("b/two.bin", size: 20_000)
+        let model = ScanWindowModel()
+        model.scanOptions = .fixture
+        defer { model.close() }
+        model.start(ScanTarget(path: fixture.root.path))
+        let deadline = ContinuousClock.now + .seconds(10)
+        while model.phase != .finished, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let tree = try #require(model.tree)
+        let a = try #require(tree.node(atRelativePath: "a"))
+        model.hovered = a
+        model.selection = tree.node(atRelativePath: "b")
+
+        // Listing the root again gives the folders in it new IDs.
+        var options = ScanOptions.fixture
+        options.descends = false
+        let listing = await Scan(root: fixture.root, options: options).run().tree
+        model.updateTree { current in
+            current.refresh(current.root, listing: listing, subtrees: [:])
+            return current
+        }
+
+        let hovered = try #require(model.hovered)
+        #expect(hovered != a)
+        #expect(tree.relativePath(of: hovered) == "a")
+        #expect(model.selection.map { tree.relativePath(of: $0) } == "b")
+    }
+
     @Test func dataVolumePathsMapToTheirFirmlinkedPlaceForTheStartupDisk() async throws {
         let fixture = try FixtureTree()
         try fixture.file("Users/me/Downloads/file.bin", size: 1_000)

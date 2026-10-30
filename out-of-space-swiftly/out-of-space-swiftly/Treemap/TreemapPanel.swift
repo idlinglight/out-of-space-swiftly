@@ -24,6 +24,8 @@ private struct TreemapContent: View {
     @State private var relayout: Task<Void, Never>?
     /// The tile under the pointer, which may be a "smaller items" tile (that has no node of its own).
     @State private var hoveredTile: Int?
+    /// Where the pointer is, while it is over the treemap; a new layout may put another item there.
+    @State private var pointer: CGPoint?
 
     var body: some View {
         ZStack {
@@ -38,11 +40,10 @@ private struct TreemapContent: View {
         .onContinuousHover { phase in
             switch phase {
             case .active(let location):
-                let index = tile(at: location)
-                if hoveredTile != index { hoveredTile = index }
-                let id = index.flatMap { current?.layout.tiles[$0].id }
-                if model.hovered != id { model.hovered = id }
+                pointer = location
+                hover(at: location, in: current)
             case .ended:
+                pointer = nil
                 hoveredTile = nil
                 model.hovered = nil
             }
@@ -62,7 +63,7 @@ private struct TreemapContent: View {
         .onChange(of: key, initial: true) { _, key in
             relayout?.cancel()
             guard let drawing, drawing.key.version == key.version, drawing.key.zoom == key.zoom else {
-                drawing = TreemapDrawing(tree: tree, key: key)
+                show(TreemapDrawing(tree: tree, key: key))
                 return
             }
             // While the window is being resized, the last drawing is shown scaled; the layout is redone
@@ -70,7 +71,7 @@ private struct TreemapContent: View {
             relayout = Task {
                 try? await Task.sleep(for: .milliseconds(120))
                 guard !Task.isCancelled else { return }
-                self.drawing = TreemapDrawing(tree: tree, key: key)
+                show(TreemapDrawing(tree: tree, key: key))
             }
         }
     }
@@ -82,8 +83,22 @@ private struct TreemapContent: View {
         return drawing
     }
 
-    private func tile(at location: CGPoint) -> Int? {
-        guard let drawing = current else { return nil }
+    /// Replaces the drawing. The pointer stays where it was, but the tiles may have moved under it (a
+    /// background update, a resize), so what it points at is looked up again.
+    private func show(_ drawing: TreemapDrawing) {
+        self.drawing = drawing
+        if let pointer { hover(at: pointer, in: drawing) }
+    }
+
+    private func hover(at location: CGPoint, in drawing: TreemapDrawing?) {
+        let index = tile(at: location, in: drawing)
+        if hoveredTile != index { hoveredTile = index }
+        let id = index.flatMap { drawing?.layout.tiles[$0].id }
+        if model.hovered != id { model.hovered = id }
+    }
+
+    private func tile(at location: CGPoint, in drawing: TreemapDrawing?) -> Int? {
+        guard let drawing else { return nil }
         let point = CGPoint(x: location.x * drawing.key.size.width / max(key.size.width, 1),
                             y: location.y * drawing.key.size.height / max(key.size.height, 1))
         guard let index = drawing.layout.tileIndex(at: point), index > 0 else { return nil }
@@ -91,7 +106,7 @@ private struct TreemapContent: View {
     }
 
     private func node(at location: CGPoint) -> NodeID? {
-        tile(at: location).flatMap { current?.layout.tiles[$0].id }
+        tile(at: location, in: current).flatMap { current?.layout.tiles[$0].id }
     }
 }
 

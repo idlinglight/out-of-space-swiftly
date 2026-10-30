@@ -63,7 +63,7 @@ extension ScanWindowModel {
             guard let id else { continue }
             if change.deep {
                 let path = tree.relativePath(of: id)
-                let result = await Scan(root: tree.url(of: id)).run()
+                let result = await Scan(root: tree.url(of: id), options: scanOptions).run()
                 guard !Task.isCancelled, self.tree === tree, !result.wasCancelled else { return }
                 // The folder may have gone to the Trash, or its ID changed, while it was being scanned.
                 guard tree.node(atRelativePath: path) == id else { continue }
@@ -82,7 +82,7 @@ extension ScanWindowModel {
     private func refreshOneLevel(_ id: NodeID, in tree: ScanTree) async {
         let url = tree.url(of: id)
         let path = tree.relativePath(of: id)
-        var options = ScanOptions()
+        var options = scanOptions
         options.descends = false
         options.includesDataVolume = false
         let listing = await Scan(root: url, options: options).run()
@@ -98,7 +98,7 @@ extension ScanWindowModel {
         where entries.kind(of: child) == .directory && !entries.flags(of: child).contains(.notEntered) {
             let name = entries.name(of: child)
             guard known[name] != entries.node(child).fileID else { continue }
-            let result = await Scan(root: url.appendingPathComponent(name, isDirectory: true)).run()
+            let result = await Scan(root: url.appendingPathComponent(name, isDirectory: true), options: scanOptions).run()
             guard !Task.isCancelled, self.tree === tree, !result.wasCancelled else { return }
             subtrees[name] = result.tree
         }
