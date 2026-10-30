@@ -1,6 +1,6 @@
 # ADR-0005: Treemap: squarified layout, drawn with Canvas, colored by content
 
-Status: accepted, 2026-10-10
+Status: accepted, 2026-10-10; amended 2026-10-30
 
 ## Context
 
@@ -32,9 +32,15 @@ precisely. It should look like it belongs on macOS: quiet, with color reserved f
 
 **Interaction**
 
-- The zoom level fills the view. Hovering names an item in the status bar; a click selects (shared with
-  the outline and the inspector); a double-click zooms one level towards the item; the path bar and Zoom
-  Out (⌘↑) go back up. The context menu acts on the item under the pointer.
+- The zoom level fills the view. A click selects (shared with the outline and the inspector); a
+  double-click zooms one level towards the item; the path bar and Zoom Out (⌘↑) go back up. The context
+  menu acts on the item under the pointer.
+- Hovering names an item in the inspector, in a section of its own kept in view below the selection, each
+  headed with a small copy of its outline in the treemap. The status bar tells the scan's state; with the
+  inspector hidden, it also shows the item under the pointer, in a part of its own. Item and scan state
+  never share a place, so neither takes the other's away (a busy folder updates every few seconds).
+- Background updates keep the hover and the selection on their items, and the item under the pointer is
+  looked up again when a new layout moves the tiles.
 
 ## Consequences
 

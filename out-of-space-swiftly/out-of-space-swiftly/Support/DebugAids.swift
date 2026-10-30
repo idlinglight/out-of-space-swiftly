@@ -11,8 +11,9 @@ import ScreenCaptureKit
 ///   or protected places (see CLAUDE.md).
 /// - `OOSS_ZOOM=<relative path>`: once the scan is done, zoom into that folder (relative to the root).
 /// - `OOSS_SELECT=<relative path>`: then select that item.
-/// - `OOSS_HOVER=<relative path>`: then set that item as hovered, for the status bar (the treemap's hover
-///   outline follows the real pointer).
+/// - `OOSS_HOVER=<relative path>`: then set that item as hovered, for the inspector's "Under the Pointer"
+///   (or the status bar, with the inspector hidden). The treemap's hover outline follows the real pointer.
+/// - `OOSS_INSPECTOR=hidden`: start with the inspector hidden.
 /// - `OOSS_WINDOW_SIZE=<width>x<height>`: resize the window at launch.
 /// - `OOSS_SNAPSHOT=/path/to/file.png`: once the scan is done (or after `OOSS_SNAPSHOT_DELAY` seconds,
 ///   default 60), write an image of the window there and a text dump next to it (`file.txt`) with the
@@ -26,6 +27,7 @@ import ScreenCaptureKit
 @MainActor
 enum DebugAids {
     static var environment: [String: String] { ProcessInfo.processInfo.environment }
+    static var showsInspector: Bool { environment["OOSS_INSPECTOR"] != "hidden" }
     private static var attached = false
 
     /// Called by every window when it appears; acts on the first one only.
