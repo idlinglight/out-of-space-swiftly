@@ -295,6 +295,38 @@ nonisolated final class ScanTree: @unchecked Sendable {
         propagate(from: target, size: size - old.size, count: count - old.descendantCount)
     }
 
+    /// Whether `listing`, a finished one-level scan of `target`, shows what the tree has there already: the
+    /// same error, and the same entries by name, kind, flags and size on disk, folders by file ID. `refresh`
+    /// would then change nothing that shows.
+    func hasSameEntries(_ target: NodeID, as listing: ScanTree) -> Bool {
+        guard errors[target] == listing.errors[listing.root] else { return false }
+        var current: [String: NodeID] = [:]
+        for child in childRange(of: target) where !nodes[child].flags.contains(.removed) && nodes[child].kind != .group {
+            current[names[child]] = NodeID(child)
+        }
+        let entries = listing.childRange(of: listing.root)
+        guard entries.count == current.count else { return false }
+        for child in entries {
+            guard let id = current[listing.names[child]] else { return false }
+            let (old, new) = (nodes[Int(id)], listing.nodes[child])
+            guard old.kind == new.kind,
+                  old.flags.intersection(Self.listedFlags) == new.flags.intersection(Self.listedFlags) else { return false }
+            if new.kind == .directory, !new.flags.contains(.notEntered) {
+                // `refresh` keeps what was found below a folder that is still the same one, its errors too.
+                guard old.fileID == new.fileID else { return false }
+            } else {
+                guard old.allocatedSize == new.allocatedSize, old.logicalSize == new.logicalSize,
+                      errors[id] == listing.errors[NodeID(child)] else { return false }
+            }
+        }
+        return true
+    }
+
+    /// The flags a one-level listing sets for an entry just as a full scan does. The others depend on what else
+    /// the scan saw (duplicates, folders reached twice) or come from reading the folder itself (failed, slow).
+    private static let listedFlags: Flags = [.notEntered, .protected, .dataless, .sparse, .compressed, .purgeable,
+                                             .mayShareBlocks, .firmlink, .hardLinked, .sharesAllBlocks]
+
     /// Adds a change of size and count to every ancestor of `id`, moving each changed node to its place
     /// among its siblings.
     private func propagate(from id: NodeID, size: Int64, count: Int32) {

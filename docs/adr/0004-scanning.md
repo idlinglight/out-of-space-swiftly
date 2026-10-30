@@ -1,6 +1,6 @@
 # ADR-0004: Scanning with our own getattrlistbulk walker
 
-Status: accepted, 2026-10-10
+Status: accepted, 2026-10-10; amended 2026-10-30
 
 ## Context
 
@@ -60,11 +60,16 @@ The facts behind this decision are in [docs/SCANNING.md](../SCANNING.md). In sho
 **Keeping a scan current**
 
 - A window watches its root with FSEvents from the moment the scan starts, so changes made during a scan
-  are caught up on afterwards. Events name directories; after two quiet seconds each changed directory is
-  listed again (one level, `ScanOptions.descends = false`): subdirectories that are still the same
-  directory (name and file ID) keep what was found in them, new ones are scanned, and totals are
-  corrected up to the root. Only when FSEvents reports lost events (must-scan-subdirectories) is the
-  whole subtree scanned again.
+  are caught up on afterwards. Events name directories; two seconds after the first change (so a folder
+  that never goes quiet is still refreshed) each changed directory is listed again (one level,
+  `ScanOptions.descends = false`): subdirectories that are still the same directory (name and file ID)
+  keep what was found in them, new ones are scanned, and totals are corrected up to the root. Only when
+  FSEvents reports lost events (must-scan-subdirectories) is the whole subtree scanned again.
+- Changes inside a folder the scan did not look into (not entered, or not opened for lack of permission)
+  are left alone: nothing shown can have changed there, and the folder itself appearing or going away is
+  reported for the folder that holds it. A home folder has such places that change all the time.
+- A listing that shows the same entries as before (names, kinds, flags, sizes on disk; folders by file ID)
+  leaves the tree as it is, so the window is not laid out again for nothing.
 - For a scan of `/`, event paths on the Data volume are mapped to their firmlinked place in the tree.
 
 **Numbers for a volume** come from the volume itself (`ATTR_VOL_SPACEUSED`, the capacity keys); a scan of a

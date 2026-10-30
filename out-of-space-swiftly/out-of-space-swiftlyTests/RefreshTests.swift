@@ -25,9 +25,28 @@ struct RefreshTests {
         let downloads = try #require(tree.node(atRelativePath: "Users/me/Downloads"))
         let me = try #require(tree.node(atRelativePath: "Users/me"))
 
-        #expect(ScanWindowModel.directory(for: "Users/me/Downloads", in: tree, rootPath: fixture.root.path) == downloads)
-        #expect(ScanWindowModel.directory(for: "Users/me/Gone/deeper", in: tree, rootPath: fixture.root.path) == me)
-        #expect(ScanWindowModel.directory(for: "", in: tree, rootPath: fixture.root.path) == tree.root)
+        #expect(ScanWindowModel.refreshTarget(for: "Users/me/Downloads", in: tree, rootPath: fixture.root.path) == .directory(downloads))
+        #expect(ScanWindowModel.refreshTarget(for: "Users/me/Gone/deeper", in: tree, rootPath: fixture.root.path) == .directory(me))
+        #expect(ScanWindowModel.refreshTarget(for: "", in: tree, rootPath: fixture.root.path) == .directory(tree.root))
+    }
+
+    @Test func changesInsideFoldersTheScanDidNotLookIntoAreLeftAlone() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("Library/Containers/app/Data/file.bin", size: 1_000)
+        try fixture.file("Library/locked/file.bin", size: 1_000)
+        try fixture.setPermissions("Library/locked", 0)
+        var options = ScanOptions.fixture
+        options.protectedPaths = [fixture.url("Library/Containers").path]
+        let tree = await Scan(root: fixture.root, options: options).run().tree
+        let library = try #require(tree.node(atRelativePath: "Library"))
+        let root = fixture.root.path
+
+        #expect(ScanWindowModel.refreshTarget(for: "Library/Containers", in: tree, rootPath: root) == .unseen)
+        #expect(ScanWindowModel.refreshTarget(for: "Library/Containers/app/Data", in: tree, rootPath: root) == .unseen)
+        #expect(ScanWindowModel.refreshTarget(for: "Library/locked", in: tree, rootPath: root) == .unseen)
+        #expect(ScanWindowModel.refreshTarget(for: "Library/locked/new/deeper", in: tree, rootPath: root) == .unseen)
+        // Such a folder appearing or going away is reported for the folder that holds it.
+        #expect(ScanWindowModel.refreshTarget(for: "Library", in: tree, rootPath: root) == .directory(library))
     }
 
     @Test func anUpdateKeepsHoverAndSelectionOnTheirItems() async throws {
@@ -69,8 +88,8 @@ struct RefreshTests {
         let downloads = try #require(tree.node(atRelativePath: "Users/me/Downloads"))
 
         // The tree stands in for a scan of `/`, as only the root path decides the mapping.
-        #expect(ScanWindowModel.directory(for: "System/Volumes/Data/Users/me/Downloads", in: tree, rootPath: "/") == downloads)
-        #expect(ScanWindowModel.directory(for: "System/Volumes/Data/Users/me/Downloads", in: tree, rootPath: fixture.root.path)
-            == tree.root)
+        #expect(ScanWindowModel.refreshTarget(for: "System/Volumes/Data/Users/me/Downloads", in: tree, rootPath: "/") == .directory(downloads))
+        #expect(ScanWindowModel.refreshTarget(for: "System/Volumes/Data/Users/me/Downloads", in: tree, rootPath: fixture.root.path)
+            == .directory(tree.root))
     }
 }
