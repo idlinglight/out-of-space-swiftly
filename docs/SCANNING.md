@@ -47,6 +47,11 @@ Benchmark, warm cache, 100,003 entries in 1,110 directories, best of three, `-O`
 - Some calls can block for a long time (privacy checks, cloud downloads, network and automount lookups).
   Don't run them on Swift's cooperative thread pool; use dedicated threads and stream results (likely,
   WWDC21 "Swift concurrency: Behind the scenes").
+- GCD's global queues are no substitute for dedicated threads, and no place for a timeout (verified on
+  2026-11-13, macOS 27.2, 10 cores): with a CPU-bound block running on every core, a 1 s `asyncAfter` on
+  a global queue ran after 5 s, when that work ended; on a private serial queue it ran after 1.05 s. The
+  cause is likely that the global queues get no further thread while as many threads as there are cores
+  are running, while a serial queue gets one regardless. A thread of one's own starts at once.
 
 Errors (verified on a directory with mode 000): `open`/`getattrlistbulk` give `EACCES` (13);
 FileManager wraps it as Cocoa 257 with the POSIX error underneath and continues if the error handler says

@@ -126,7 +126,7 @@ nonisolated struct VolumeInfo: Sendable, Hashable, Identifiable {
 
 /// The mounted volumes.
 nonisolated enum Volumes {
-    /// The volumes worth showing a user, `/` first, the rest by name. Each is read on its own GCD thread (the
+    /// The volumes worth showing a user, `/` first, the rest by name. Each is read on a thread of its own (the
     /// calls block, so they stay off Swift's cooperative pool). One that takes longer than `timeout`, such as
     /// a hung network mount, is left out and doesn't hold up the others; its thread finishes on its own.
     static func browsable(timeout: Duration = .seconds(3)) async -> [VolumeInfo] {
@@ -159,39 +159,69 @@ nonisolated enum Volumes {
         }
     }
 
-    /// Runs `load` for every URL at once, each on a GCD thread; failures and late answers are left out.
+    /// Runs `load` for every URL at once, each on a thread of its own; failures and late answers are left out.
+    ///
+    /// Neither the reads nor the timeout use GCD's global queues. Those get no further thread while as many
+    /// threads as there are cores are running, so in a process that keeps every core busy a read would start
+    /// late and the timeout would fire late. A thread of its own starts at once, and a serial queue's block
+    /// gets a thread whatever the others are doing.
     static func load(
         _ urls: [URL], timeout: Duration, using load: @escaping @Sendable (URL) throws -> VolumeInfo
     ) async -> [VolumeInfo] {
-        await withTaskGroup(of: VolumeInfo?.self) { group in
+        if urls.isEmpty { return [] }
+        return await withCheckedContinuation { continuation in
+            let answers = Answers(awaited: urls.count, continuation: continuation)
             for url in urls {
-                group.addTask {
-                    await withCheckedContinuation { continuation in
-                        let once = Once()
-                        DispatchQueue.global(qos: .utility).async {
-                            let info = try? load(url)
-                            if once.claim() { continuation.resume(returning: info) }
-                        }
-                        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout / .seconds(1)) {
-                            if once.claim() { continuation.resume(returning: nil) }
-                        }
-                    }
-                }
+                let thread = Thread { answers.add(try? load(url)) }
+                thread.name = "Volume \(url.path)"
+                thread.qualityOfService = .utility
+                thread.start()
             }
-            return await group.reduce(into: []) { volumes, info in
-                if let info { volumes.append(info) }
-            }
+            timeouts.asyncAfter(deadline: .now() + timeout / .seconds(1)) { answers.close() }
         }
     }
 
-    private nonisolated final class Once: Sendable {
-        private let claimed = Mutex(false)
-        /// True for the first caller only.
-        func claim() -> Bool {
-            claimed.withLock { claimed in
-                defer { claimed = true }
-                return !claimed
+    private static let timeouts = DispatchQueue(
+        label: "at.idling.out-of-space-swiftly.volume-timeouts", qos: .utility
+    )
+
+    /// Collects the volumes as their threads deliver them and hands them over once: when the last one is in
+    /// or when the time is up, whichever comes first. What arrives after that is dropped.
+    private nonisolated final class Answers: Sendable {
+        private struct State {
+            var volumes: [VolumeInfo] = []
+            var awaited: Int
+            var continuation: CheckedContinuation<[VolumeInfo], Never>?
+        }
+        private let state: Mutex<State>
+
+        init(awaited: Int, continuation: CheckedContinuation<[VolumeInfo], Never>) {
+            state = Mutex(State(awaited: awaited, continuation: continuation))
+        }
+
+        /// One volume's answer; nil for one that could not be read.
+        func add(_ volume: VolumeInfo?) {
+            finish { state in
+                guard state.continuation != nil else { return false }
+                if let volume { state.volumes.append(volume) }
+                state.awaited -= 1
+                return state.awaited == 0
             }
+        }
+
+        /// The time is up.
+        func close() {
+            finish { _ in true }
+        }
+
+        /// Hands over what has arrived if `isOver` says so and nothing was handed over before.
+        private func finish(if isOver: (inout State) -> Bool) {
+            let handover = state.withLock { state -> (CheckedContinuation<[VolumeInfo], Never>, [VolumeInfo])? in
+                guard isOver(&state), let continuation = state.continuation else { return nil }
+                state.continuation = nil
+                return (continuation, state.volumes)
+            }
+            if let (continuation, volumes) = handover { continuation.resume(returning: volumes) }
         }
     }
 }

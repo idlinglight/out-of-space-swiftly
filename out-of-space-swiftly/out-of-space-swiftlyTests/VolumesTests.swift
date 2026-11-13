@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 @testable import out_of_space_swiftly
 
@@ -107,6 +108,53 @@ struct VolumesTests {
         release.signal()
         #expect(Set(volumes.map(\.url.path)) == ["/a", "/b"])
     }
+
+    /// GCD starts no more threads for its global queues while as many threads as there are cores are running.
+    /// A process that busy still gets its volumes on time, because neither the reads nor the timeout wait for
+    /// one of those threads. No clock here either: the process stays busy until `load` has returned.
+    @Test func aBusyProcessStillGetsItsVolumesOnTime() async throws {
+        let urls = ["/a", "/hung", "/b"].map { URL(filePath: $0, directoryHint: .isDirectory) }
+        let cores = ProcessInfo.processInfo.activeProcessorCount
+        let running = Tally()
+        let stop = Flag()
+        let busyGaveUp = Flag()
+        for _ in 0 ..< cores {
+            DispatchQueue.global(qos: .utility).async {
+                running.add()
+                let giveUp = ContinuousClock.now + .seconds(20)
+                var x = 0.0
+                while !stop.isSet {
+                    for _ in 0 ..< 100_000 { x = (x + 1).squareRoot() }
+                    if ContinuousClock.now > giveUp { busyGaveUp.set() }
+                    if busyGaveUp.isSet { break }
+                }
+            }
+        }
+        // Fewer start when other tests hold some of those threads; the pool is as busy as it gets then, too.
+        let clock = ContinuousClock()
+        let deadline = clock.now + .milliseconds(300)
+        while running.count < cores, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+
+        let release = DispatchSemaphore(value: 0)
+        let hungGaveUp = Flag()
+        let volumes = await Volumes.load(urls, timeout: .milliseconds(200)) { url in
+            if url.path == "/hung", release.wait(timeout: .now() + 30) == .timedOut { hungGaveUp.set() }
+            return makeVolume(url.path)
+        }
+        let stillBusy = !busyGaveUp.isSet
+        let stillHung = !hungGaveUp.isSet
+        stop.set()
+        release.signal()
+        #expect(stillBusy, "load returned only after the process had stopped being busy")
+        #expect(stillHung, "load returned only after the hung volume had answered")
+        #expect(Set(volumes.map(\.url.path)) == ["/a", "/b"])
+    }
+}
+
+private final class Tally: Sendable {
+    private let value = Mutex(0)
+    func add() { value.withLock { $0 += 1 } }
+    var count: Int { value.withLock { $0 } }
 }
 
 private func makeVolume(
