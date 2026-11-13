@@ -86,32 +86,107 @@ struct VolumesTests {
         #expect(unknown.otherContainerUsage == 0)
     }
 
-    @Test func rootComesFirstThenByName() {
-        let volumes = Volumes.ordered([
-            makeVolume("/Volumes/b", name: "b"), makeVolume("/", name: "z", root: true), makeVolume("/Volumes/a", name: "A"),
+    @Test func rootComesFirstThenByMountPoint() {
+        let entries = VolumeList.ordered([
+            entry(makeVolume("/Volumes/b", name: "b")), entry(makeVolume("/", name: "z", root: true)),
+            entry(makeVolume("/Volumes/a", name: "A")),
         ])
-        #expect(volumes.map(\.name) == ["z", "A", "b"])
+        #expect(entries.map(\.name) == ["z", "A", "b"])
     }
 
-    @Test func aVolumeThatHangsIsLeftOut() async {
-        let urls = ["/a", "/hung", "/b"].map { URL(filePath: $0, directoryHint: .isDirectory) }
-        // No clock in here: on a busy machine the timeout itself fires late. The hung volume answers when it is
-        // released, which is after `load` has returned. It gives up after half a minute, so that a `load` that
-        // waits for it fails this test instead of hanging it.
+    @Test func aVolumeWithoutAnAnswerGoesByItsMountPoint() {
+        let entries = VolumeList.ordered([
+            entry(makeVolume("/Volumes/b", name: "b")), VolumeList.Entry(url: url("/Volumes/Archive")),
+            VolumeList.Entry(url: url("/")),
+        ])
+        #expect(entries.map(\.name) == ["Startup Disk", "Archive", "b"])
+    }
+
+    @Test func anEntryKeepsItsPlaceWhenItsVolumeAnswersUnderAnotherName() {
+        let others = [entry(makeVolume("/Volumes/m", name: "m")), entry(makeVolume("/Volumes/z", name: "z"))]
+        let waiting = VolumeList.ordered(others + [VolumeList.Entry(url: url("/mnt/nas"))])
+        let answered = VolumeList.ordered(others + [entry(makeVolume("/mnt/nas", name: "Archive"))])
+        #expect(waiting.map(\.url.path) == ["/Volumes/m", "/mnt/nas", "/Volumes/z"])
+        #expect(answered.map(\.url.path) == waiting.map(\.url.path))
+    }
+
+    @Test func volumesThatAnswerInTimeComeAsOneList() async {
+        var lists: [VolumeList] = []
+        for await list in Volumes.overview(timeout: .seconds(60), mountPoints: { [url("/a"), url("/b")] },
+                                           using: { makeVolume($0.path, name: $0.lastPathComponent) }) {
+            lists.append(list)
+        }
+        #expect(lists.count == 1)
+        #expect(lists.first?.isListed == true)
+        #expect(lists.first?.entries.map(\.info?.url.path) == ["/a", "/b"])
+    }
+
+    @Test func aVolumeThatCannotBeReadIsLeftOut() async {
+        var last: VolumeList?
+        for await list in Volumes.overview(timeout: .seconds(60), mountPoints: { [url("/a"), url("/broken")] },
+                                           using: { url in
+            if url.path == "/broken" { throw CocoaError(.fileReadUnknown) }
+            return makeVolume(url.path)
+        }) {
+            last = list
+        }
+        #expect(last?.entries.map(\.url.path) == ["/a"])
+    }
+
+    /// No clock in here: on a busy machine a timeout fires late. The volume that hangs answers when the
+    /// test releases it, which is after the list without its figures has arrived. It gives up after half a
+    /// minute, so that an overview that waits for it fails this test instead of hanging it.
+    @Test func aVolumeThatHangsIsShownWithoutFiguresUntilItAnswers() async {
         let release = DispatchSemaphore(value: 0)
         let gaveUp = Flag()
-        let volumes = await Volumes.load(urls, timeout: .seconds(1)) { url in
+        defer { release.signal() }
+        var sawItWaiting = false
+        var last: VolumeList?
+        for await list in Volumes.overview(timeout: .milliseconds(200),
+                                           mountPoints: { [url("/a"), url("/hung"), url("/b")] },
+                                           using: { url in
             if url.path == "/hung", release.wait(timeout: .now() + 30) == .timedOut { gaveUp.set() }
-            return makeVolume(url.path)
+            return makeVolume(url.path, name: url.lastPathComponent)
+        }) {
+            last = list
+            let answered = Set(list.entries.filter { $0.info != nil }.map(\.url.path))
+            if answered == ["/a", "/b"], list.entries.map(\.url.path) == ["/a", "/b", "/hung"], !gaveUp.isSet {
+                sawItWaiting = true
+                release.signal()
+            }
         }
-        #expect(gaveUp.isSet == false, "load returned only after the hung volume had answered")
-        release.signal()
-        #expect(Set(volumes.map(\.url.path)) == ["/a", "/b"])
+        #expect(sawItWaiting, "no list showed the hung volume without figures beside the others")
+        #expect(last?.entries.map(\.info?.url.path) == ["/a", "/b", "/hung"])
+    }
+
+    @Test func aLateListOfVolumesIsSaidSoAndFollowedByTheVolumes() async {
+        let release = DispatchSemaphore(value: 0)
+        let gaveUp = Flag()
+        defer { release.signal() }
+        var sawItWaiting = false
+        var sawAVolumeWaiting = false
+        var last: VolumeList?
+        for await list in Volumes.overview(timeout: .milliseconds(200), mountPoints: {
+            if release.wait(timeout: .now() + 30) == .timedOut { gaveUp.set() }
+            return [url("/a")]
+        }, using: { makeVolume($0.path) }) {
+            last = list
+            if list.entries.contains(where: { $0.info == nil }) { sawAVolumeWaiting = true }
+            if !list.isListed, list.entries.isEmpty, !gaveUp.isSet {
+                sawItWaiting = true
+                release.signal()
+            }
+        }
+        #expect(sawItWaiting, "no list said that the mount points were still missing")
+        // The volume's own time starts when it is asked: it is not called late because the list was.
+        #expect(sawAVolumeWaiting == false)
+        #expect(last?.isListed == true)
+        #expect(last?.entries.map(\.info?.url.path) == ["/a"])
     }
 
     /// GCD starts no more threads for its global queues while as many threads as there are cores are running.
     /// A process that busy still gets its volumes, and its timeout, without waiting for one of those threads.
-    /// No clock here either: the process stays busy until `load` has returned.
+    /// No clock here either: the process stays busy until the lists have arrived.
     @Test func aBusyProcessStillGetsItsVolumesOnTime() async throws {
         let cores = ProcessInfo.processInfo.activeProcessorCount
         let running = Tally()
@@ -122,7 +197,7 @@ struct VolumesTests {
             stop.set()
             release.signal()
         }
-        // At utility priority, below the other tests' work. They give up so that a `load` that waits for
+        // At utility priority, below the other tests' work. They give up so that an overview that waits for
         // them fails this test instead of hanging it.
         for _ in 0 ..< cores {
             DispatchQueue.global(qos: .utility).async {
@@ -140,25 +215,37 @@ struct VolumesTests {
         let deadline = clock.now + .milliseconds(300)
         while running.count < cores, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
 
-        // Volumes that answer: `load` returns when they are in. The timeout is far away, so that nothing
+        // Volumes that answer: the list comes when they are in. The timeout is far away, so that nothing
         // here depends on how soon their threads get to run.
-        let healthy = ["/a", "/b"].map { URL(filePath: $0, directoryHint: .isDirectory) }
-        let volumes = await Volumes.load(healthy, timeout: .seconds(60)) { makeVolume($0.path) }
-        #expect(Set(volumes.map(\.url.path)) == ["/a", "/b"])
+        var healthy: VolumeList?
+        for await list in Volumes.overview(timeout: .seconds(60), mountPoints: { [url("/a"), url("/b")] },
+                                           using: { makeVolume($0.path) }) {
+            healthy = list
+        }
+        #expect(healthy?.entries.map(\.info?.url.path) == ["/a", "/b"])
         #expect(busyGaveUp.isSet == false, "the volumes arrived only after the process had stopped being busy")
 
-        // A volume that hangs: `load` returns when the timeout fires.
+        // A volume that hangs: the list comes when the timeout fires, with the volume still hanging. (A list
+        // before that one says that the mount points are missing, if their thread got to run late.)
         let hungGaveUp = Flag()
-        let hung = [URL(filePath: "/hung", directoryHint: .isDirectory)]
-        let none = await Volumes.load(hung, timeout: .milliseconds(200)) { url in
+        var first: VolumeList?
+        for await list in Volumes.overview(timeout: .milliseconds(200), mountPoints: { [url("/hung")] },
+                                           using: { url in
             if release.wait(timeout: .now() + 30) == .timedOut { hungGaveUp.set() }
             return makeVolume(url.path)
+        }) where list.isListed {
+            first = list
+            break
         }
-        #expect(none.isEmpty)
+        #expect(first?.entries == [VolumeList.Entry(url: url("/hung"))])
         #expect(hungGaveUp.isSet == false, "the timeout fired only after the hung volume had answered")
         #expect(busyGaveUp.isSet == false, "the timeout fired only after the process had stopped being busy")
     }
 }
+
+private func url(_ path: String) -> URL { URL(filePath: path, directoryHint: .isDirectory) }
+
+private func entry(_ volume: VolumeInfo) -> VolumeList.Entry { VolumeList.Entry(url: volume.url, info: volume) }
 
 private final class Tally: Sendable {
     private let value = Mutex(0)

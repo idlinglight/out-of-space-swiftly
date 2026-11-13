@@ -14,6 +14,9 @@ import ScreenCaptureKit
 /// - `OOSS_HOVER=<relative path>`: then set that item as hovered, for the inspector's "Under the Pointer"
 ///   (or the status bar, with the inspector hidden). The treemap's hover outline follows the real pointer.
 /// - `OOSS_INSPECTOR=hidden`: start with the inspector hidden.
+/// - `OOSS_DEMO_VOLUMES=1`: the start view lists made-up disks in place of the real ones, to show how it
+///   treats disks that keep it waiting: "Demo Quick" answers at once, "Demo Slow" after eight seconds,
+///   "Demo Silent" never. No disk is read, and clicking one of them does nothing.
 /// - `OOSS_WINDOW_SIZE=<width>x<height>`: resize the window at launch.
 /// - `OOSS_SNAPSHOT=/path/to/file.png`: once the scan is done (or after `OOSS_SNAPSHOT_DELAY` seconds,
 ///   default 60), write an image of the window there and a text dump next to it (`file.txt`) with the
@@ -58,6 +61,25 @@ enum DebugAids {
                 }
             }
         }
+    }
+
+    static var showsDemoVolumes: Bool { environment["OOSS_DEMO_VOLUMES"] == "1" }
+
+    /// The start view's lists of volumes for `OOSS_DEMO_VOLUMES`; nil without it.
+    static func demoVolumeLists() -> AsyncStream<VolumeList>? {
+        guard showsDemoVolumes else { return nil }
+        let waits: [String: TimeInterval] = ["Demo Quick": 0, "Demo Slow": 8, "Demo Silent": 100_000]
+        let mountPoints = waits.keys.sorted().map { URL(fileURLWithPath: "/Volumes/\($0)", isDirectory: true) }
+        return Volumes.overview(mountPoints: { mountPoints }, using: { url in
+            Thread.sleep(forTimeInterval: waits[url.lastPathComponent] ?? 0)
+            return VolumeInfo(
+                url: url, name: url.lastPathComponent, totalCapacity: 500_000_000_000,
+                availableCapacity: 120_000_000_000, availableCapacityForImportantUsage: 150_000_000_000,
+                attributes: VolumeAttributes(usedSpace: 380_000_000_000), dataVolumeAttributes: nil,
+                isRootFileSystem: false, isInternal: false, isRemovable: true, isEjectable: true, isLocal: true,
+                isBrowsable: true, isReadOnly: false, formatDescription: "APFS", uuid: nil
+            )
+        })
     }
 
     private static func waitForScan(_ model: ScanWindowModel) async {

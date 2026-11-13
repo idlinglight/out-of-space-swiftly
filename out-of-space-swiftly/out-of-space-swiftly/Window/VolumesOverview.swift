@@ -1,26 +1,51 @@
 import SwiftUI
 
-/// The mounted disks with how full they are; clicking one scans it.
+/// The mounted disks with how full they are; clicking one scans it. A disk that has not answered after a
+/// few seconds is shown as such and gets its figures when it answers.
 struct VolumesOverview: View {
     let choose: (URL) -> Void
-    @State private var volumes: [VolumeInfo] = []
+    /// Nil until there is something to show: every disk has answered, or the wait is over.
+    @State private var list: VolumeList?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(volumes) { volume in
-                VolumeRow(volume: volume) { choose(volume.url) }
+            if let list {
+                if !list.isListed {
+                    WaitingNote(text: "macOS has not said yet which disks there are.")
+                }
+                ForEach(list.entries) { entry in
+                    VolumeRow(entry: entry) { scan(entry.url) }
+                }
             }
         }
         .frame(maxWidth: 520)
         .task {
-            // Read on threads of their own; a volume that does not answer in time is left out.
-            volumes = await Volumes.browsable()
+            // Read on threads of their own; the lists arrive here on the main actor.
+            for await list in volumeLists() { self.list = list }
         }
+    }
+
+    private func scan(_ url: URL) {
+        #if DEBUG
+        // The made-up disks are there to be looked at; nothing is mounted where they point.
+        if DebugAids.showsDemoVolumes { return }
+        #endif
+        choose(url)
+    }
+
+    private func volumeLists() -> AsyncStream<VolumeList> {
+        #if DEBUG
+        if let demo = DebugAids.demoVolumeLists() { return demo }
+        #endif
+        return Volumes.overview()
     }
 }
 
+/// One disk: with its sizes once it has answered, until then as not responding. Both in one shape, so that
+/// nothing moves when it answers. A disk that has not answered can be scanned all the same; the scan then
+/// waits for it, and can be stopped.
 private struct VolumeRow: View {
-    let volume: VolumeInfo
+    let entry: VolumeList.Entry
     let scan: () -> Void
 
     var body: some View {
@@ -28,18 +53,31 @@ private struct VolumeRow: View {
             HStack(spacing: 12) {
                 Image(systemName: symbol)
                     .font(.title2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(entry.info == nil ? .tertiary : .secondary)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text(volume.name).fontWeight(.medium)
+                        Text(entry.name).fontWeight(.medium)
                         Spacer()
-                        Text("\(ByteCount.text(volume.availableCapacity)) free of \(ByteCount.text(volume.totalCapacity))")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
+                        if let volume = entry.info {
+                            Text("\(ByteCount.text(volume.availableCapacity)) free of \(ByteCount.text(volume.totalCapacity))")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        } else {
+                            Text("Not responding")
+                                .foregroundStyle(.secondary)
+                            ProgressView()
+                                .controlSize(.small)
+                        }
                     }
-                    CapacityBar(total: volume.totalCapacity, used: volume.displayedUsedCapacity,
-                                purgeable: volume.purgeableEstimate)
+                    if let volume = entry.info {
+                        CapacityBar(total: volume.totalCapacity, used: volume.displayedUsedCapacity,
+                                    purgeable: volume.purgeableEstimate)
+                    } else {
+                        Capsule()
+                            .fill(.quaternary)
+                            .frame(height: CapacityBar.height)
+                    }
                 }
             }
             .padding(10)
@@ -47,18 +85,42 @@ private struct VolumeRow: View {
         }
         .buttonStyle(.plain)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-        .help("Scan \(volume.name)")
+        .help(help)
     }
 
     private var symbol: String {
+        guard let volume = entry.info else { return entry.isRoot ? "internaldrive" : "externaldrive.badge.questionmark" }
         if volume.isRootFileSystem { return "internaldrive" }
         if !volume.isLocal { return "server.rack" }
         return volume.isRemovable || volume.isEjectable ? "externaldrive" : "internaldrive"
     }
+
+    private var help: String {
+        guard entry.info == nil else { return "Scan \(entry.name)" }
+        return """
+            \(entry.name) has not answered yet. It may be asleep, disconnected or very busy; its sizes appear \
+            here when it answers. Click to scan it anyway: the scan waits for it and can be stopped.
+            """
+    }
 }
 
+/// A line that says what is being waited for.
+private struct WaitingNote: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(text)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+    }
+}
 /// Used, purgeable and free space as one bar.
 private struct CapacityBar: View {
+    static let height: CGFloat = 6
     let total: Int64
     let used: Int64
     let purgeable: Int64
@@ -75,7 +137,7 @@ private struct CapacityBar: View {
             .background(.quaternary)
             .clipShape(Capsule())
         }
-        .frame(height: 6)
+        .frame(height: Self.height)
         .help("\(ByteCount.text(used)) used, of which about \(ByteCount.text(purgeable)) can be freed by macOS when needed")
     }
 }
