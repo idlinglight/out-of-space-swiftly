@@ -129,12 +129,14 @@ nonisolated enum Volumes {
     /// The volumes worth showing a user, `/` first, the rest by name. The list of mount points and each
     /// volume are read on threads of their own (`Blocking`). A volume that takes longer than `timeout`, such
     /// as a hung network mount, is left out and doesn't hold up the others; its thread finishes on its own.
-    /// If the list itself takes that long, there are no volumes to show.
+    /// The timeout covers both; if the list itself takes that long, there are no volumes to show.
     static func browsable(timeout: Duration = .seconds(3)) async -> [VolumeInfo] {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
         guard let urls = await Blocking.run("Volume list", timeout: timeout, { browsableVolumeURLs() }) else {
             return []
         }
-        return ordered(await load(urls, timeout: timeout) { try VolumeInfo.load($0) })
+        return ordered(await load(urls, timeout: max(.zero, deadline - clock.now)) { try VolumeInfo.load($0) })
     }
 
     /// Mount points of the browsable volumes that aren't hidden (which leaves out the system's own volumes

@@ -10,6 +10,11 @@ struct BlockingTests {
         #expect(answer == 42)
     }
 
+    @Test func withoutATimeoutItWaitsForTheAnswer() async {
+        let answer = await Blocking.run("Test") { 6 * 7 }
+        #expect(answer == 42)
+    }
+
     @Test func givesUpOnACallThatTakesTooLong() async {
         let release = DispatchSemaphore(value: 0)
         let gaveUp = Flag()

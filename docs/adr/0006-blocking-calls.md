@@ -23,15 +23,18 @@ and listed the mount points on the main actor.
 ## Decision
 
 - A call that asks the file system about a place that may not answer runs on a thread of its own, through
-  `Blocking` (`Support/Blocking.swift`): `Blocking.run` for one call with a timeout, `Blocking.startThread`
-  and `Blocking.after` where several calls share one timeout (`Volumes.load`). Timeouts run on a serial
-  queue of their own. Both at user-initiated priority.
+  `Blocking` (`Support/Blocking.swift`): `Blocking.run` for one call, with a timeout where something is
+  held up for the answer and without one where it is not; `Blocking.startThread` and `Blocking.after`
+  where several calls share one timeout (`Volumes.load`). Timeouts run on a serial queue of their own.
+  Both at user-initiated priority.
 - What the main actor does at once needs no look at the disk: making a `ScanTarget` from a URL, creating
   a `Scan`, starting it. The scan looks at its root on a thread of its own when it runs, and a root that
   takes long to answer shows among the folders that keep the scan waiting. The window can stop such a
   scan like any other.
-- What the window can do without (the display name, the volume's figures, watching for changes) is asked
-  for with a timeout, and the window goes on without it when the time is up.
+- Watching the root for changes starts on that same thread, once the root is known and before anything in
+  it is read, so that no change falls between the scan and the watch (ADR-0004).
+- What the window can do without (the display name, the volume's figures) is asked for without a timeout
+  and used when it comes. The list of volumes on the start view has one, since the view waits for it.
 
 ## Consequences
 
@@ -39,5 +42,9 @@ and listed the mount points on the main actor.
 - A scan target's path is what the user chose, with symbolic links left in; the resolved path is the
   tree's (`ScanTree.rootPath`). Two windows on the same folder through different links do not know of
   each other.
+- Making a file URL from a path asks the disk whether it is a folder unless the call says so
+  (`isDirectory:`, `directoryHint:`). On the main actor, say so.
+- Every scan starts one more short-lived thread than it has scanning threads, background refreshes
+  included.
 - Acting on one item of a finished scan (move to the Trash, open, reveal in Finder) still runs on the main
   actor. The volume answered when it was scanned, but it may have stopped since.

@@ -10,22 +10,21 @@ extension ScanWindowModel {
     /// Measured from the first change, not the last: a folder that never stops changing is still refreshed.
     static let refreshDelay: Duration = .seconds(2)
 
-    func watch(_ target: ScanTarget) {
+    /// Follows the watch that `setup` delivers: the scan starts it on a thread of its own before it reads
+    /// anything (`Scan.init`). Nothing is delivered for a scan stopped before it knew its root; cancelling
+    /// `watchTask` ends the wait.
+    func watch(_ target: ScanTarget, setup: AsyncStream<Result<FileSystemEvents, any Error>>) {
         watchTask?.cancel()
         watchTask = Task { [weak self] in
-            // Setting up the watch resolves the folder's path, which can block.
-            let setup = await Blocking.run("Watch setup", timeout: Self.patience) {
-                Result { try FileSystemEvents.watch(target.url) }
-            }
+            var delivery = setup.makeAsyncIterator()
             let events: FileSystemEvents
-            switch setup {
+            switch await delivery.next() {
             case .success(let watch):
                 events = watch
             case .failure(let error):
                 Log.app.error("Not watching \(target.path, privacy: .private): \(error.localizedDescription, privacy: .public)")
                 return
             case nil:
-                Log.app.error("Not watching \(target.path, privacy: .private): the folder did not answer in time")
                 return
             }
             for await batch in events.changes {

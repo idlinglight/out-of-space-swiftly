@@ -28,8 +28,10 @@ nonisolated struct ScanOptions: Sendable {
 
     /// Other apps' containers in the user's home folder.
     static var defaultProtectedPaths: [String] {
-        let library = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library")
-        return ["Containers", "Group Containers"].map { library.appendingPathComponent($0).path }
+        // With the hints, making these URLs does not ask the disk whether they are folders.
+        let library = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent("Library", isDirectory: true)
+        return ["Containers", "Group Containers"].map { library.appendingPathComponent($0, isDirectory: true).path }
     }
 }
 
@@ -71,10 +73,16 @@ nonisolated final class Scan: Sendable {
 
     /// Creating a scan looks at nothing on disk, so it is safe on the main actor (ADR-0006); `run()` does
     /// all of that on the scan's own threads, starting with the root (symbolic links in its path resolved).
-    init(root: URL, options: ScanOptions = ScanOptions()) {
+    ///
+    /// - Parameter beforeReading: Called with the root's real path on a thread of the scan, once the root
+    ///   is known and before anything in it is read; it may block. The place to start watching the root, so
+    ///   that no change falls between the scan and the watch. Not called for a scan cancelled before that.
+    init(
+        root: URL, options: ScanOptions = ScanOptions(), beforeReading: (@Sendable (String) -> Void)? = nil
+    ) {
         self.options = options
         (progress, progressContinuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
-        engine = ScanEngine(root: root, options: options)
+        engine = ScanEngine(root: root, options: options, beforeReading: beforeReading)
     }
 
     func cancel() {
@@ -145,6 +153,7 @@ private nonisolated struct FileKey: Hashable {
 private nonisolated final class ScanEngine: @unchecked Sendable {
     let root: URL
     let options: ScanOptions
+    private let beforeReading: (@Sendable (String) -> Void)?
 
     private struct QueueState {
         var stack: [WorkItem] = []
@@ -187,9 +196,10 @@ private nonisolated final class ScanEngine: @unchecked Sendable {
     /// The setup thread's key in `inFlight`, where the scanning threads use their index.
     private static let setupThread = -1
 
-    init(root: URL, options: ScanOptions) {
+    init(root: URL, options: ScanOptions, beforeReading: (@Sendable (String) -> Void)?) {
         self.root = root
         self.options = options
+        self.beforeReading = beforeReading
         // Stands in until `prepare()` has looked at the root; a scan cancelled before that returns it.
         builder = Mutex(Builder(tree: ScanTree(rootPath: root.path, rootName: root.lastPathComponent,
                                                device: 0, fileID: 0)))
@@ -297,7 +307,7 @@ private nonisolated final class ScanEngine: @unchecked Sendable {
         let found = lstat(path, &info) == 0
         let name = path == "/"
             ? ((try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeLocalizedNameKey]).volumeLocalizedName) ?? "/")
-            : URL(fileURLWithPath: path).lastPathComponent
+            : URL(fileURLWithPath: path, isDirectory: true).lastPathComponent
         let tree = ScanTree(rootPath: path, rootName: name,
                             device: found ? info.st_dev : 0, fileID: found ? info.st_ino : 0)
         var protected: Set<FileKey> = []
@@ -310,6 +320,7 @@ private nonisolated final class ScanEngine: @unchecked Sendable {
             state.protected = protected
         }
         preparedRoot.withLock { $0 = path }
+        if !isCancelled { beforeReading?(path) }
     }
 
     private func runPass(_ first: WorkItem) async {

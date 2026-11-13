@@ -27,6 +27,14 @@ nonisolated enum Blocking {
         }
     }
 
+    /// Runs `work` on a thread of its own and returns what it returns, however long that takes. For an
+    /// answer that nothing else is held up for: it is used when it comes.
+    static func run<Value: Sendable>(_ name: String, _ work: @escaping @Sendable () -> Value) async -> Value {
+        await withCheckedContinuation { continuation in
+            startThread(name) { continuation.resume(returning: work()) }
+        }
+    }
+
     /// Starts a thread for one blocking call.
     static func startThread(_ name: String, _ body: @escaping @Sendable () -> Void) {
         let thread = Thread(block: body)
