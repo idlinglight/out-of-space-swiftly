@@ -51,7 +51,12 @@ Benchmark, warm cache, 100,003 entries in 1,110 directories, best of three, `-O`
   2026-11-13, macOS 27.2, 10 cores): with a CPU-bound block running on every core, a 1 s `asyncAfter` on
   a global queue ran after 5 s, when that work ended; on a private serial queue it ran after 1.05 s. The
   cause is likely that the global queues get no further thread while as many threads as there are cores
-  are running, while a serial queue gets one regardless. A thread of one's own starts at once.
+  are running, while a serial queue gets one regardless.
+- A thread of one's own and a serial queue's timer still compete for the cores (verified, same machine,
+  30 runs each, against one default-priority or two user-initiated CPU-bound threads per core): at
+  utility priority the thread started up to 0.08 s late and the timer fired up to 0.09 s late; at
+  user-initiated priority both were at most 0.02 s late. A caller waiting on Swift's cooperative pool can
+  be later than either (unsure by how much; the main actor does not wait for that pool).
 
 Errors (verified on a directory with mode 000): `open`/`getattrlistbulk` give `EACCES` (13);
 FileManager wraps it as Cocoa 257 with the POSIX error underneath and continues if the error handler says

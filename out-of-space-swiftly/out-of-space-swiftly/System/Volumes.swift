@@ -163,8 +163,9 @@ nonisolated enum Volumes {
     ///
     /// Neither the reads nor the timeout use GCD's global queues. Those get no further thread while as many
     /// threads as there are cores are running, so in a process that keeps every core busy a read would start
-    /// late and the timeout would fire late. A thread of its own starts at once, and a serial queue's block
-    /// gets a thread whatever the others are doing.
+    /// late and the timeout would fire late. A thread of its own and a serial queue's block don't wait for
+    /// that pool. Both run at user-initiated priority, since someone is waiting for the answer; busy threads
+    /// of other work then delay them by hundredths of a second (docs/SCANNING.md, section 1).
     static func load(
         _ urls: [URL], timeout: Duration, using load: @escaping @Sendable (URL) throws -> VolumeInfo
     ) async -> [VolumeInfo] {
@@ -174,7 +175,7 @@ nonisolated enum Volumes {
             for url in urls {
                 let thread = Thread { answers.add(try? load(url)) }
                 thread.name = "Volume \(url.path)"
-                thread.qualityOfService = .utility
+                thread.qualityOfService = .userInitiated
                 thread.start()
             }
             timeouts.asyncAfter(deadline: .now() + timeout / .seconds(1)) { answers.close() }
@@ -182,7 +183,7 @@ nonisolated enum Volumes {
     }
 
     private static let timeouts = DispatchQueue(
-        label: "at.idling.out-of-space-swiftly.volume-timeouts", qos: .utility
+        label: "at.idling.out-of-space-swiftly.volume-timeouts", qos: .userInitiated
     )
 
     /// Collects the volumes as their threads deliver them and hands them over once: when the last one is in
@@ -219,6 +220,7 @@ nonisolated enum Volumes {
             let handover = state.withLock { state -> (CheckedContinuation<[VolumeInfo], Never>, [VolumeInfo])? in
                 guard isOver(&state), let continuation = state.continuation else { return nil }
                 state.continuation = nil
+                defer { state.volumes = [] }
                 return (continuation, state.volumes)
             }
             if let (continuation, volumes) = handover { continuation.resume(returning: volumes) }

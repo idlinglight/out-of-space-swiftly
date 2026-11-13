@@ -110,23 +110,28 @@ struct VolumesTests {
     }
 
     /// GCD starts no more threads for its global queues while as many threads as there are cores are running.
-    /// A process that busy still gets its volumes on time, because neither the reads nor the timeout wait for
-    /// one of those threads. No clock here either: the process stays busy until `load` has returned.
+    /// A process that busy still gets its volumes, and its timeout, without waiting for one of those threads.
+    /// No clock here either: the process stays busy until `load` has returned.
     @Test func aBusyProcessStillGetsItsVolumesOnTime() async throws {
-        let urls = ["/a", "/hung", "/b"].map { URL(filePath: $0, directoryHint: .isDirectory) }
         let cores = ProcessInfo.processInfo.activeProcessorCount
         let running = Tally()
         let stop = Flag()
         let busyGaveUp = Flag()
+        let release = DispatchSemaphore(value: 0)
+        defer {
+            stop.set()
+            release.signal()
+        }
+        // At utility priority, below the other tests' work. They give up so that a `load` that waits for
+        // them fails this test instead of hanging it.
         for _ in 0 ..< cores {
             DispatchQueue.global(qos: .utility).async {
                 running.add()
-                let giveUp = ContinuousClock.now + .seconds(20)
+                let giveUp = ContinuousClock.now + .seconds(10)
                 var x = 0.0
-                while !stop.isSet {
+                while !stop.isSet, !busyGaveUp.isSet {
                     for _ in 0 ..< 100_000 { x = (x + 1).squareRoot() }
                     if ContinuousClock.now > giveUp { busyGaveUp.set() }
-                    if busyGaveUp.isSet { break }
                 }
             }
         }
@@ -135,19 +140,23 @@ struct VolumesTests {
         let deadline = clock.now + .milliseconds(300)
         while running.count < cores, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
 
-        let release = DispatchSemaphore(value: 0)
+        // Volumes that answer: `load` returns when they are in. The timeout is far away, so that nothing
+        // here depends on how soon their threads get to run.
+        let healthy = ["/a", "/b"].map { URL(filePath: $0, directoryHint: .isDirectory) }
+        let volumes = await Volumes.load(healthy, timeout: .seconds(60)) { makeVolume($0.path) }
+        #expect(Set(volumes.map(\.url.path)) == ["/a", "/b"])
+        #expect(busyGaveUp.isSet == false, "the volumes arrived only after the process had stopped being busy")
+
+        // A volume that hangs: `load` returns when the timeout fires.
         let hungGaveUp = Flag()
-        let volumes = await Volumes.load(urls, timeout: .milliseconds(200)) { url in
-            if url.path == "/hung", release.wait(timeout: .now() + 30) == .timedOut { hungGaveUp.set() }
+        let hung = [URL(filePath: "/hung", directoryHint: .isDirectory)]
+        let none = await Volumes.load(hung, timeout: .milliseconds(200)) { url in
+            if release.wait(timeout: .now() + 30) == .timedOut { hungGaveUp.set() }
             return makeVolume(url.path)
         }
-        let stillBusy = !busyGaveUp.isSet
-        let stillHung = !hungGaveUp.isSet
-        stop.set()
-        release.signal()
-        #expect(stillBusy, "load returned only after the process had stopped being busy")
-        #expect(stillHung, "load returned only after the hung volume had answered")
-        #expect(Set(volumes.map(\.url.path)) == ["/a", "/b"])
+        #expect(none.isEmpty)
+        #expect(hungGaveUp.isSet == false, "the timeout fired only after the hung volume had answered")
+        #expect(busyGaveUp.isSet == false, "the timeout fired only after the process had stopped being busy")
     }
 }
 
