@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Builds a Release copy of the app stamped with the commit it was made from, into build/, and with
-# --install replaces ~/Applications/out-of-space-swiftly.app with it and launches it.
+# --install replaces "~/Applications/Out Of Space Swiftly.app" with it and launches it.
 #
 #   Scripts/build.sh            build only; prints where the app is
 #   Scripts/build.sh --install  build, then install into ~/Applications and launch
@@ -13,6 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 project=out-of-space-swiftly/out-of-space-swiftly.xcodeproj
 scheme=out-of-space-swiftly
+name="Out Of Space Swiftly"  # PRODUCT_NAME: the app bundle, its executable and the name the Dock shows
 out=build
 
 commit=$(git rev-parse --short=7 HEAD)
@@ -41,10 +42,10 @@ fi
 
 products=$(xcodebuild -project "$project" -scheme "$scheme" -configuration Release -showBuildSettings 2>/dev/null \
   | sed -n 's/^ *BUILT_PRODUCTS_DIR = //p' | head -1)
-built="$products/$scheme.app"
+built="$products/$name.app"
 [[ -d "$built" ]] || { echo "No app at $built"; exit 1; }
 
-app="$out/$scheme.app"
+app="$out/$name.app"
 rm -rf "$app"
 ditto "$built" "$app"
 
@@ -55,13 +56,13 @@ version=$(plutil -extract CFBundleShortVersionString raw -o - "$plist")
 echo "Built $app: version $version ($count), $note"
 
 if [[ "${1:-}" == "--install" ]]; then
-  target="$HOME/Applications/$scheme.app"
+  target="$HOME/Applications/$name.app"
   mkdir -p "$HOME/Applications"
   # Match the executable path: process names are cut to 16 characters, too short for this one.
-  running="/$scheme.app/Contents/MacOS/$scheme\$"
+  running="/$name.app/Contents/MacOS/$name\$"
   if pgrep -fq "$running"; then
-    echo "Quitting the running $scheme"
-    osascript -e "tell application \"$scheme\" to quit" >/dev/null 2>&1 || true
+    echo "Quitting the running $name"
+    osascript -e "tell application \"$name\" to quit" >/dev/null 2>&1 || true
     for _ in 1 2 3 4 5; do pgrep -fq "$running" || break; sleep 0.5; done
     pgrep -fq "$running" && pkill -f "$running" || true
   fi

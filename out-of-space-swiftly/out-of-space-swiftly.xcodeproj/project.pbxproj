@@ -17,7 +17,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		000000000000000000000120 /* out-of-space-swiftly.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "out-of-space-swiftly.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000120 /* Out Of Space Swiftly.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Out Of Space Swiftly.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000121 /* out-of-space-swiftlyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "out-of-space-swiftlyTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -60,7 +60,7 @@
 		000000000000000000000020 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000120 /* out-of-space-swiftly.app */,
+				000000000000000000000120 /* Out Of Space Swiftly.app */,
 				000000000000000000000121 /* out-of-space-swiftlyTests.xctest */,
 			);
 			name = Products;
@@ -84,7 +84,7 @@
 			);
 			name = "out-of-space-swiftly";
 			productName = "out-of-space-swiftly";
-			productReference = 000000000000000000000120 /* out-of-space-swiftly.app */;
+			productReference = 000000000000000000000120 /* Out Of Space Swiftly.app */;
 			productType = "com.apple.product-type.application";
 		};
 		000000000000000200000000 /* out-of-space-swiftlyTests */ = {
@@ -318,7 +318,6 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Out Of Space Swiftly";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -327,7 +326,8 @@
 				);
 				MARKETING_VERSION = 0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "at.idling.out-of-space-swiftly";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = out_of_space_swiftly;
+				PRODUCT_NAME = "Out Of Space Swiftly";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -351,7 +351,6 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Out Of Space Swiftly";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -360,7 +359,8 @@
 				);
 				MARKETING_VERSION = 0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "at.idling.out-of-space-swiftly";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = out_of_space_swiftly;
+				PRODUCT_NAME = "Out Of Space Swiftly";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -386,7 +386,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/out-of-space-swiftly.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/out-of-space-swiftly";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Out Of Space Swiftly.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Out Of Space Swiftly";
 			};
 			name = Debug;
 		};
@@ -406,7 +406,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/out-of-space-swiftly.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/out-of-space-swiftly";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Out Of Space Swiftly.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Out Of Space Swiftly";
 			};
 			name = Release;
 		};
