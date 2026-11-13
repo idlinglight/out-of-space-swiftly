@@ -167,6 +167,25 @@ struct ScanTests {
         #expect(tree.size(of: tree.root) == fixture.allocatedSize("Library/Preferences/settings.plist"))
     }
 
+    @Test func theRootIsLookedAtWhenTheScanRunsNotWhenItIsCreated() async throws {
+        let fixture = try FixtureTree()
+        let scan = Scan(root: fixture.url("later"), options: .fixture)
+        try fixture.file("later/one.bin", size: 10_000)
+        let tree = await scan.run().tree
+        #expect(tree.node(tree.root).fileID != 0)
+        #expect(find("one.bin", in: tree) != nil)
+    }
+
+    @Test func aSymbolicLinkAsTheRootIsResolved() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("real/one.bin", size: 10_000)
+        try FileManager.default.createSymbolicLink(at: fixture.url("link"), withDestinationURL: fixture.url("real"))
+        let tree = await Scan(root: fixture.url("link"), options: .fixture).run().tree
+        #expect(tree.rootPath == fixture.url("real").path)
+        #expect(tree.name(of: tree.root) == "real")
+        #expect(find("one.bin", in: tree) != nil)
+    }
+
     @Test func cancellingBeforeTheStartReturnsAtOnce() async throws {
         let fixture = try FixtureTree()
         try fixture.file("a/b.bin", size: 1_000)

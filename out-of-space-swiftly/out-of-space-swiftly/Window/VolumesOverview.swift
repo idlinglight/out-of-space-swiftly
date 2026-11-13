@@ -13,7 +13,7 @@ struct VolumesOverview: View {
         }
         .frame(maxWidth: 520)
         .task {
-            // Loads off the main actor; a volume that does not answer in time is left out.
+            // Read on threads of their own; a volume that does not answer in time is left out.
             volumes = await Volumes.browsable()
         }
     }

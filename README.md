@@ -72,6 +72,7 @@ Recorded as ADRs in [docs/adr](docs/adr):
 - [0003](docs/adr/0003-windows-own-their-scans.md) Each window owns its scan
 - [0004](docs/adr/0004-scanning.md) Scanning with our own getattrlistbulk walker
 - [0005](docs/adr/0005-treemap.md) Treemap: squarified layout, drawn with Canvas, colored by content
+- [0006](docs/adr/0006-blocking-calls.md) Calls that can block run on threads of their own
 
 ## License
 

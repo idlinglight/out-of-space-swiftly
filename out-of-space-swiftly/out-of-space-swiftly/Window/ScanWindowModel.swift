@@ -4,13 +4,34 @@ import os
 
 /// What a window shows: one folder or volume to scan. It is the window's scene value, so windows come back
 /// with their folder after a relaunch (ADR-0003).
+///
+/// Making one and reading `path`, `url` and `plainName` look at nothing on disk. `path` is what the user
+/// chose, tidied up but with symbolic links left in; the scan resolves them (`ScanTree.rootPath`).
 nonisolated struct ScanTarget: Codable, Hashable, Sendable {
     var path: String
 
+    init(path: String) {
+        self.path = path
+    }
+
+    /// The folder `url` names, without `.` and `..` in its path.
+    init(_ url: URL) {
+        path = url.standardized.path
+    }
+
     var url: URL { URL(fileURLWithPath: path, isDirectory: true) }
-    var displayName: String {
-        path == "/" ? (try? url.resourceValues(forKeys: [.volumeLocalizedNameKey]).volumeLocalizedName) ?? "/"
-            : FileManager.default.displayName(atPath: path)
+
+    /// The name the path ends in.
+    var plainName: String { path == "/" ? "/" : url.lastPathComponent }
+
+    /// The name Finder shows for the folder that `path` leads to (symbolic links resolved): localized, and
+    /// for `/` the disk's. Asks the file system, which can block, so not on the main actor (ADR-0006).
+    static func displayName(ofPath path: String) -> String {
+        let url = URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath()
+        if url.path == "/" {
+            return (try? url.resourceValues(forKeys: [.volumeLocalizedNameKey]).volumeLocalizedName) ?? "/"
+        }
+        return FileManager.default.displayName(atPath: url.path)
     }
 }
 
@@ -26,6 +47,8 @@ final class ScanWindowModel {
     }
 
     private(set) var target: ScanTarget?
+    /// The target's name as Finder shows it, once the file system has given it.
+    private(set) var targetName: String?
     private(set) var phase = Phase.choosing
     private(set) var progress = ScanProgress()
     private(set) var tree: ScanTree?
@@ -75,6 +98,15 @@ final class ScanWindowModel {
 
     var isScanning: Bool { phase == .scanning }
 
+    /// How long the window waits for a look at the disk that it can do without (a name, a volume's figures,
+    /// the start of watching) before it gives up on it. Long enough for a disk that has to spin up.
+    static let patience: Duration = .seconds(30)
+
+    /// What to call `target`: its name as Finder shows it if this window has it, else the name in its path.
+    func name(of target: ScanTarget) -> String {
+        target == self.target ? targetName ?? target.plainName : target.plainName
+    }
+
     /// The size of everything scanned; follows changes made in place (Trash, background rescans).
     var totalSize: Int64 {
         _ = treeVersion
@@ -87,7 +119,9 @@ final class ScanWindowModel {
     func start(_ target: ScanTarget) {
         cancel()
         stopWatching()
+        if target != self.target { targetName = nil }
         self.target = target
+        loadName(of: target)
         phase = .scanning
         progress = ScanProgress()
         selection = nil
@@ -137,20 +171,32 @@ final class ScanWindowModel {
             stopWatching()
             return
         }
-        loadVolumeUsage(for: target)
+        loadVolumeUsage(for: target, rootPath: result.tree.rootPath)
         refreshIfPending()
     }
 
     /// Looks up whether the scan root is a volume's root and, if so, how much that volume uses.
-    private func loadVolumeUsage(for target: ScanTarget) {
+    private func loadVolumeUsage(for target: ScanTarget, rootPath: String) {
         Task { [weak self] in
-            let usage = await Task.detached(priority: .utility) { () -> VolumeUsage? in
-                guard let volume = try? Volumes.volume(containing: target.url),
-                      volume.url.standardizedFileURL.path == target.url.standardizedFileURL.path else { return nil }
+            let usage = await Blocking.run("Volume usage", timeout: Self.patience) { () -> VolumeUsage? in
+                let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+                guard let volume = try? Volumes.volume(containing: root), volume.url.path == rootPath else {
+                    return nil
+                }
                 return VolumeUsage(name: volume.name, used: volume.displayedUsedCapacity)
-            }.value
+            }
             guard let self, self.target == target else { return }
-            self.volumeUsage = usage
+            self.volumeUsage = usage ?? nil
+        }
+    }
+
+    private func loadName(of target: ScanTarget) {
+        Task { [weak self] in
+            let name = await Blocking.run("Display name", timeout: Self.patience) {
+                ScanTarget.displayName(ofPath: target.path)
+            }
+            guard let self, let name, self.target == target else { return }
+            self.targetName = name
         }
     }
 

@@ -13,11 +13,19 @@ extension ScanWindowModel {
     func watch(_ target: ScanTarget) {
         watchTask?.cancel()
         watchTask = Task { [weak self] in
+            // Setting up the watch resolves the folder's path, which can block.
+            let setup = await Blocking.run("Watch setup", timeout: Self.patience) {
+                Result { try FileSystemEvents.watch(target.url) }
+            }
             let events: FileSystemEvents
-            do {
-                events = try FileSystemEvents.watch(target.url)
-            } catch {
+            switch setup {
+            case .success(let watch):
+                events = watch
+            case .failure(let error):
                 Log.app.error("Not watching \(target.path, privacy: .private): \(error.localizedDescription, privacy: .public)")
+                return
+            case nil:
+                Log.app.error("Not watching \(target.path, privacy: .private): the folder did not answer in time")
                 return
             }
             for await batch in events.changes {
@@ -50,7 +58,7 @@ extension ScanWindowModel {
     }
 
     private func refreshPending() async {
-        guard let tree, let target else { return }
+        guard let tree, target != nil else { return }
         let changes = Self.coalesce(pendingChanges)
         pendingChanges = [:]
         setRefreshing(true)
@@ -58,7 +66,7 @@ extension ScanWindowModel {
         for change in changes {
             guard !Task.isCancelled, self.tree === tree else { return }
             let id: NodeID
-            switch Self.refreshTarget(for: change.path, in: tree, rootPath: target.path) {
+            switch Self.refreshTarget(for: change.path, in: tree, rootPath: tree.rootPath) {
             case .directory(let directory):
                 id = directory
             case .unseen:

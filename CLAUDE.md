@@ -16,6 +16,10 @@
 - Decisions are ADRs in `docs/adr/` (`ADR-NNNN: Title`, a status line, then Context, Decision,
   Consequences). A change that contradicts an ADR amends it or adds a new one. Keep the README's ADR list
   in step.
+- A call that asks the file system about a place that may not answer (a volume's figures, a display name,
+  resolving links, "is this a folder") never runs on the main actor, on Swift's cooperative pool or on a
+  global GCD queue: it goes through `Blocking` (ADR-0006). Creating a `Scan` or a `ScanTarget` looks at
+  nothing on disk.
 - No third-party dependencies (ADR-0001). Scanning follows ADR-0004; the facts behind it, with sources and
   confidence, are in `docs/SCANNING.md`. Add to that file when an experiment answers one of its open
   questions.

@@ -33,8 +33,16 @@ struct StartView: View {
                 .padding(8)
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first, url.hasDirectoryPath || Self.isDirectory(url) else { return false }
-            choose(url)
+            guard let url = urls.first, url.isFileURL else { return false }
+            if url.hasDirectoryPath {
+                choose(url)
+            } else {
+                // A folder's URL may come without the trailing slash; only the disk can tell, and it can block.
+                Task {
+                    let isFolder = await Blocking.run("Dropped item", timeout: .seconds(3)) { Self.isDirectory(url) }
+                    if isFolder == true { choose(url) } else { NSSound.beep() }
+                }
+            }
             return true
         } isTargeted: { isDropTargeted = $0 }
         .frame(minWidth: 600, minHeight: 460)
@@ -50,7 +58,7 @@ struct StartView: View {
         if panel.runModal() == .OK, let url = panel.url { choose(url) }
     }
 
-    private static func isDirectory(_ url: URL) -> Bool {
+    private nonisolated static func isDirectory(_ url: URL) -> Bool {
         (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 }
