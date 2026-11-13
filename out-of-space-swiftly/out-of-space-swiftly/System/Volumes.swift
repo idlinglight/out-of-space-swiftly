@@ -274,22 +274,6 @@ nonisolated enum Volumes {
                 }
             }
         }
-
-        /// The time is up.
-        func close() {
-            finish { _ in true }
-        }
-
-        /// Hands over what has arrived if `isOver` says so and nothing was handed over before.
-        private func finish(if isOver: (inout State) -> Bool) {
-            let handover = state.withLock { state -> (CheckedContinuation<[VolumeInfo], Never>, [VolumeInfo])? in
-                guard isOver(&state), let continuation = state.continuation else { return nil }
-                state.continuation = nil
-                defer { state.volumes = [] }
-                return (continuation, state.volumes)
-            }
-            if let (continuation, volumes) = handover { continuation.resume(returning: volumes) }
-        }
     }
 }
 
