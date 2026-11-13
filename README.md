@@ -49,7 +49,7 @@ xcodebuild -project out-of-space-swiftly/out-of-space-swiftly.xcodeproj -scheme 
 ```
 
 `Scripts/build.sh` makes a Release build stamped with the commit it came from; `Scripts/build.sh --install`
-also replaces `~/Applications/out-of-space-swiftly.app` with it and launches it.
+also replaces `~/Applications/Out Of Space Swiftly.app` with it and launches it.
 
 Debug builds can be driven from a shell (scan a folder, zoom, select, write a snapshot of the window and
 quit) through `OOSS_*` environment variables; see `Support/DebugAids.swift`.

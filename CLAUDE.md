@@ -4,6 +4,8 @@
   sources are in `out-of-space-swiftly/out-of-space-swiftly/`, tests in
   `out-of-space-swiftly/out-of-space-swiftlyTests/`. Both folders are synchronized groups: a new file there
   is part of the target without touching the project file. The module name is `out_of_space_swiftly`.
+  The product is named `Out Of Space Swiftly` (`PRODUCT_NAME`): the app bundle and its executable carry
+  that name, since the Dock and Finder show the bundle's file name. Target, scheme and module keep theirs.
 - Build and test commands are in the README. Tests use Swift Testing. The app target defaults to
   `@MainActor` isolation; scanner code that runs off the main actor is marked `nonisolated`. With
   Approachable Concurrency on, a `nonisolated` async function still runs on its caller's actor; one that
