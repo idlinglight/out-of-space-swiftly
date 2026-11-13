@@ -65,10 +65,7 @@ struct RefreshTests {
         model.scanOptions = .fixture
         defer { model.close() }
         model.start(ScanTarget(path: fixture.root.path))
-        let deadline = ContinuousClock.now + .seconds(10)
-        while model.phase != .finished, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        _ = try await waitUntil { model.phase == .finished }
         let tree = try #require(model.tree)
         let a = try #require(tree.node(atRelativePath: "a"))
         model.hovered = a

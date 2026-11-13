@@ -26,10 +26,7 @@ struct ScanTargetTests {
         model.start(target)
         // Starting a scan asks nothing of the disk on the main actor, so the name cannot be there yet.
         #expect(model.targetName == nil)
-        let deadline = ContinuousClock.now + .seconds(10)
-        while model.targetName == nil, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        _ = try await waitUntil { model.targetName != nil }
         #expect(model.targetName == FileManager.default.displayName(atPath: fixture.root.path))
         #expect(model.name(of: target) == model.targetName)
     }
