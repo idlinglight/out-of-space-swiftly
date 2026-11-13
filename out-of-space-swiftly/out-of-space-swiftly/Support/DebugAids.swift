@@ -23,7 +23,7 @@ import ScreenCaptureKit
 ///   that much longer after the scan, for example to let changes on disk be picked up first.
 ///
 ///     OOSS_SCAN=/usr OOSS_SNAPSHOT=/tmp/oos.png OOSS_SNAPSHOT_QUIT=1 \
-///         path/to/out-of-space-swiftly.app/Contents/MacOS/out-of-space-swiftly
+///         "path/to/Out Of Space Swiftly.app/Contents/MacOS/Out Of Space Swiftly"
 @MainActor
 enum DebugAids {
     static var environment: [String: String] { ProcessInfo.processInfo.environment }

@@ -15,7 +15,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "000000000000000100000000"
-               BuildableName = "out-of-space-swiftly.app"
+               BuildableName = "Out Of Space Swiftly.app"
                BlueprintName = "out-of-space-swiftly"
                ReferencedContainer = "container:out-of-space-swiftly.xcodeproj">
             </BuildableReference>
@@ -56,7 +56,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "000000000000000100000000"
-            BuildableName = "out-of-space-swiftly.app"
+            BuildableName = "Out Of Space Swiftly.app"
             BlueprintName = "out-of-space-swiftly"
             ReferencedContainer = "container:out-of-space-swiftly.xcodeproj">
          </BuildableReference>
