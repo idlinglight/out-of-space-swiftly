@@ -94,15 +94,18 @@ struct VolumesTests {
 
     @Test func aVolumeThatHangsIsLeftOut() async {
         let urls = ["/a", "/hung", "/b"].map { URL(filePath: $0, directoryHint: .isDirectory) }
-        let clock = ContinuousClock()
-        let start = clock.now
-        // Margins wide enough for a busy machine: tests run in parallel, some of them CPU-heavy.
+        // No clock in here: on a busy machine the timeout itself fires late. The hung volume answers when it is
+        // released, which is after `load` has returned. It gives up after half a minute, so that a `load` that
+        // waits for it fails this test instead of hanging it.
+        let release = DispatchSemaphore(value: 0)
+        let gaveUp = Flag()
         let volumes = await Volumes.load(urls, timeout: .seconds(1)) { url in
-            if url.path == "/hung" { Thread.sleep(forTimeInterval: 4) }
+            if url.path == "/hung", release.wait(timeout: .now() + 30) == .timedOut { gaveUp.set() }
             return makeVolume(url.path)
         }
+        #expect(gaveUp.isSet == false, "load returned only after the hung volume had answered")
+        release.signal()
         #expect(Set(volumes.map(\.url.path)) == ["/a", "/b"])
-        #expect(clock.now - start < .seconds(3))
     }
 }
 

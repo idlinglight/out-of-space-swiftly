@@ -166,9 +166,3 @@ private final class ChangeLog: Sendable {
         }
     }
 }
-
-private final class Flag: Sendable {
-    private let value = Mutex(false)
-    func set() { value.withLock { $0 = true } }
-    var isSet: Bool { value.withLock { $0 } }
-}
