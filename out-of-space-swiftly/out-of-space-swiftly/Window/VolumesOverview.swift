@@ -75,8 +75,9 @@ private struct VolumeRow: View {
     }
 }
 
-/// A disk that has not answered yet: its name and that it is being waited for. It can be scanned all the
-/// same; the scan then waits for it, and can be stopped.
+/// A disk that has not answered yet: its name and that it is being waited for, in the shape of the row it
+/// becomes when it answers, so that nothing moves then. It can be scanned all the same; the scan then waits
+/// for it, and can be stopped.
 private struct UnresponsiveVolumeRow: View {
     let entry: VolumeList.Entry
     let scan: () -> Void
@@ -97,9 +98,9 @@ private struct UnresponsiveVolumeRow: View {
                         ProgressView()
                             .controlSize(.small)
                     }
-                    Text("It may be asleep, disconnected or very busy. Its sizes appear here when it answers.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Capsule()
+                        .fill(.quaternary)
+                        .frame(height: 6)
                 }
             }
             .padding(10)
@@ -107,7 +108,10 @@ private struct UnresponsiveVolumeRow: View {
         }
         .buttonStyle(.plain)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-        .help("Scan \(entry.name). It has not answered yet, so the scan will wait for it.")
+        .help("""
+            \(entry.name) has not answered yet. It may be asleep, disconnected or very busy; its sizes appear \
+            here when it answers. Click to scan it anyway: the scan waits for it and can be stopped.
+            """)
     }
 }
 

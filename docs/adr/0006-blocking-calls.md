@@ -34,7 +34,10 @@ and listed the mount points on the main actor.
 - Watching the root for changes starts on that same thread, once the root is known and before anything in
   it is read, so that no change falls between the scan and the watch (ADR-0004).
 - What the window can do without (the display name, the volume's figures) is asked for without a timeout
-  and used when it comes. The list of volumes on the start view has one, since the view waits for it.
+  and used when it comes.
+- The start view waits three seconds for the volumes. One that has not answered by then is listed as not
+  responding, without figures, and gets them when it answers; it can be scanned all the same. If not even
+  the list of volumes is there, the view says so.
 
 ## Consequences
 

@@ -8,7 +8,8 @@ Built locally, not distributed.
 ## What it does
 
 - Start with a folder: Choose Folder…, Home Folder, drop one on the window, or click a disk in the
-  list, which shows each mounted volume's used, purgeable and free space.
+  list, which shows each mounted volume's used, purgeable and free space. A disk that does not answer
+  (asleep, disconnected, very busy) is listed as not responding and filled in when it does.
 - The scan shows what it has found and where it is reading; folders that keep it waiting are named.
 - The result is a treemap of the folder: every file a rectangle sized by the space it takes on disk,
   colored by what it holds (images, video, audio, archives, documents, code, applications). Folders nest
