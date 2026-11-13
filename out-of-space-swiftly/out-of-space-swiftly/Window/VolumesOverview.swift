@@ -14,11 +14,7 @@ struct VolumesOverview: View {
                     WaitingNote(text: "macOS has not said yet which disks there are.")
                 }
                 ForEach(list.entries) { entry in
-                    if let volume = entry.info {
-                        VolumeRow(volume: volume) { choose(volume.url) }
-                    } else {
-                        UnresponsiveVolumeRow(entry: entry) { choose(entry.url) }
-                    }
+                    VolumeRow(entry: entry) { scan(entry.url) }
                 }
             }
         }
@@ -29,6 +25,14 @@ struct VolumesOverview: View {
         }
     }
 
+    private func scan(_ url: URL) {
+        #if DEBUG
+        // The made-up disks are there to be looked at; nothing is mounted where they point.
+        if DebugAids.showsDemoVolumes { return }
+        #endif
+        choose(url)
+    }
+
     private func volumeLists() -> AsyncStream<VolumeList> {
         #if DEBUG
         if let demo = DebugAids.demoVolumeLists() { return demo }
@@ -37,8 +41,11 @@ struct VolumesOverview: View {
     }
 }
 
+/// One disk: with its sizes once it has answered, until then as not responding. Both in one shape, so that
+/// nothing moves when it answers. A disk that has not answered can be scanned all the same; the scan then
+/// waits for it, and can be stopped.
 private struct VolumeRow: View {
-    let volume: VolumeInfo
+    let entry: VolumeList.Entry
     let scan: () -> Void
 
     var body: some View {
@@ -46,61 +53,31 @@ private struct VolumeRow: View {
             HStack(spacing: 12) {
                 Image(systemName: symbol)
                     .font(.title2)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(volume.name).fontWeight(.medium)
-                        Spacer()
-                        Text("\(ByteCount.text(volume.availableCapacity)) free of \(ByteCount.text(volume.totalCapacity))")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    CapacityBar(total: volume.totalCapacity, used: volume.displayedUsedCapacity,
-                                purgeable: volume.purgeableEstimate)
-                }
-            }
-            .padding(10)
-            .contentShape(RoundedRectangle(cornerRadius: 8))
-        }
-        .buttonStyle(.plain)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-        .help("Scan \(volume.name)")
-    }
-
-    private var symbol: String {
-        if volume.isRootFileSystem { return "internaldrive" }
-        if !volume.isLocal { return "server.rack" }
-        return volume.isRemovable || volume.isEjectable ? "externaldrive" : "internaldrive"
-    }
-}
-
-/// A disk that has not answered yet: its name and that it is being waited for, in the shape of the row it
-/// becomes when it answers, so that nothing moves then. It can be scanned all the same; the scan then waits
-/// for it, and can be stopped.
-private struct UnresponsiveVolumeRow: View {
-    let entry: VolumeList.Entry
-    let scan: () -> Void
-
-    var body: some View {
-        Button(action: scan) {
-            HStack(spacing: 12) {
-                Image(systemName: entry.isRoot ? "internaldrive" : "externaldrive.badge.questionmark")
-                    .font(.title2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(entry.info == nil ? .tertiary : .secondary)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text(entry.name).fontWeight(.medium)
                         Spacer()
-                        Text("Not responding")
-                            .foregroundStyle(.secondary)
-                        ProgressView()
-                            .controlSize(.small)
+                        if let volume = entry.info {
+                            Text("\(ByteCount.text(volume.availableCapacity)) free of \(ByteCount.text(volume.totalCapacity))")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        } else {
+                            Text("Not responding")
+                                .foregroundStyle(.secondary)
+                            ProgressView()
+                                .controlSize(.small)
+                        }
                     }
-                    Capsule()
-                        .fill(.quaternary)
-                        .frame(height: 6)
+                    if let volume = entry.info {
+                        CapacityBar(total: volume.totalCapacity, used: volume.displayedUsedCapacity,
+                                    purgeable: volume.purgeableEstimate)
+                    } else {
+                        Capsule()
+                            .fill(.quaternary)
+                            .frame(height: CapacityBar.height)
+                    }
                 }
             }
             .padding(10)
@@ -108,10 +85,22 @@ private struct UnresponsiveVolumeRow: View {
         }
         .buttonStyle(.plain)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-        .help("""
+        .help(help)
+    }
+
+    private var symbol: String {
+        guard let volume = entry.info else { return entry.isRoot ? "internaldrive" : "externaldrive.badge.questionmark" }
+        if volume.isRootFileSystem { return "internaldrive" }
+        if !volume.isLocal { return "server.rack" }
+        return volume.isRemovable || volume.isEjectable ? "externaldrive" : "internaldrive"
+    }
+
+    private var help: String {
+        guard entry.info == nil else { return "Scan \(entry.name)" }
+        return """
             \(entry.name) has not answered yet. It may be asleep, disconnected or very busy; its sizes appear \
             here when it answers. Click to scan it anyway: the scan waits for it and can be stopped.
-            """)
+            """
     }
 }
 
@@ -131,6 +120,7 @@ private struct WaitingNote: View {
 }
 /// Used, purgeable and free space as one bar.
 private struct CapacityBar: View {
+    static let height: CGFloat = 6
     let total: Int64
     let used: Int64
     let purgeable: Int64
@@ -147,7 +137,7 @@ private struct CapacityBar: View {
             .background(.quaternary)
             .clipShape(Capsule())
         }
-        .frame(height: 6)
+        .frame(height: Self.height)
         .help("\(ByteCount.text(used)) used, of which about \(ByteCount.text(purgeable)) can be freed by macOS when needed")
     }
 }

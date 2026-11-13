@@ -25,7 +25,7 @@ and listed the mount points on the main actor.
 - A call that asks the file system about a place that may not answer runs on a thread of its own, through
   `Blocking` (`Support/Blocking.swift`): `Blocking.run` for one call, with a timeout where something is
   held up for the answer and without one where it is not; `Blocking.startThread` and `Blocking.after`
-  where several calls share one timeout (`Volumes.load`). Timeouts run on a serial queue of their own.
+  where several calls share one timeout (`Volumes.overview`). Timeouts run on a serial queue of their own.
   Both at user-initiated priority.
 - What the main actor does at once needs no look at the disk: making a `ScanTarget` from a URL, creating
   a `Scan`, starting it. The scan looks at its root on a thread of its own when it runs, and a root that
@@ -35,13 +35,16 @@ and listed the mount points on the main actor.
   it is read, so that no change falls between the scan and the watch (ADR-0004).
 - What the window can do without (the display name, the volume's figures) is asked for without a timeout
   and used when it comes.
-- The start view waits three seconds for the volumes. One that has not answered by then is listed as not
-  responding, without figures, and gets them when it answers; it can be scanned all the same. If not even
-  the list of volumes is there, the view says so.
+- The start view waits three seconds for the volumes. One that has not answered three seconds after it was
+  asked is listed as not responding, without figures, and gets them when it answers; it can be scanned
+  all the same. If the list of volumes is not there after three seconds, the view says so. The volumes are
+  ordered by their mount points, so a row keeps its place when its volume answers.
 
 ## Consequences
 
-- A call that never returns keeps its thread until the app quits. Nothing waits for it.
+- A call that never returns keeps its thread until the app quits. Nothing is held up by it.
+- Every start view asks the volumes for itself. With a volume that never answers, each one leaves a thread
+  behind.
 - A scan target's path is what the user chose, with symbolic links left in; the resolved path is the
   tree's (`ScanTree.rootPath`). Two windows on the same folder through different links do not know of
   each other.

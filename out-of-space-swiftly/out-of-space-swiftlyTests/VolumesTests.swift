@@ -86,7 +86,7 @@ struct VolumesTests {
         #expect(unknown.otherContainerUsage == 0)
     }
 
-    @Test func rootComesFirstThenByName() {
+    @Test func rootComesFirstThenByMountPoint() {
         let entries = VolumeList.ordered([
             entry(makeVolume("/Volumes/b", name: "b")), entry(makeVolume("/", name: "z", root: true)),
             entry(makeVolume("/Volumes/a", name: "A")),
@@ -100,6 +100,14 @@ struct VolumesTests {
             VolumeList.Entry(url: url("/")),
         ])
         #expect(entries.map(\.name) == ["Startup Disk", "Archive", "b"])
+    }
+
+    @Test func anEntryKeepsItsPlaceWhenItsVolumeAnswersUnderAnotherName() {
+        let others = [entry(makeVolume("/Volumes/m", name: "m")), entry(makeVolume("/Volumes/z", name: "z"))]
+        let waiting = VolumeList.ordered(others + [VolumeList.Entry(url: url("/mnt/nas"))])
+        let answered = VolumeList.ordered(others + [entry(makeVolume("/mnt/nas", name: "Archive"))])
+        #expect(waiting.map(\.url.path) == ["/Volumes/m", "/mnt/nas", "/Volumes/z"])
+        #expect(answered.map(\.url.path) == waiting.map(\.url.path))
     }
 
     @Test func volumesThatAnswerInTimeComeAsOneList() async {
@@ -156,18 +164,22 @@ struct VolumesTests {
         let gaveUp = Flag()
         defer { release.signal() }
         var sawItWaiting = false
+        var sawAVolumeWaiting = false
         var last: VolumeList?
         for await list in Volumes.overview(timeout: .milliseconds(200), mountPoints: {
             if release.wait(timeout: .now() + 30) == .timedOut { gaveUp.set() }
             return [url("/a")]
         }, using: { makeVolume($0.path) }) {
             last = list
+            if list.entries.contains(where: { $0.info == nil }) { sawAVolumeWaiting = true }
             if !list.isListed, list.entries.isEmpty, !gaveUp.isSet {
                 sawItWaiting = true
                 release.signal()
             }
         }
         #expect(sawItWaiting, "no list said that the mount points were still missing")
+        // The volume's own time starts when it is asked: it is not called late because the list was.
+        #expect(sawAVolumeWaiting == false)
         #expect(last?.isListed == true)
         #expect(last?.entries.map(\.info?.url.path) == ["/a"])
     }
@@ -213,14 +225,15 @@ struct VolumesTests {
         #expect(healthy?.entries.map(\.info?.url.path) == ["/a", "/b"])
         #expect(busyGaveUp.isSet == false, "the volumes arrived only after the process had stopped being busy")
 
-        // A volume that hangs: the list comes when the timeout fires, with the volume still hanging.
+        // A volume that hangs: the list comes when the timeout fires, with the volume still hanging. (A list
+        // before that one says that the mount points are missing, if their thread got to run late.)
         let hungGaveUp = Flag()
         var first: VolumeList?
         for await list in Volumes.overview(timeout: .milliseconds(200), mountPoints: { [url("/hung")] },
                                            using: { url in
             if release.wait(timeout: .now() + 30) == .timedOut { hungGaveUp.set() }
             return makeVolume(url.path)
-        }) {
+        }) where list.isListed {
             first = list
             break
         }

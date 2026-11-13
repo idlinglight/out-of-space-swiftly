@@ -136,19 +136,21 @@ nonisolated struct VolumeList: Sendable, Equatable {
         var id: URL { url }
         /// The volume's own name once it has answered; until then the one its mount point carries.
         var name: String { info?.name ?? (isRoot ? "Startup Disk" : url.lastPathComponent) }
-        var isRoot: Bool { info?.isRootFileSystem ?? (url.path == "/") }
+        var isRoot: Bool { url.path == "/" }
     }
 
     /// False while macOS has not said which volumes are mounted.
     var isListed = true
-    /// `/` first, the rest by name.
+    /// `/` first, the rest by mount point.
     var entries: [Entry] = []
 
-    /// `/` first, then by name.
+    /// `/` first, then by the name of the mount point (as a rule the volume's name), then by its path. The
+    /// order rests on the mount points alone, so an entry keeps its place when its volume answers.
     static func ordered(_ entries: [Entry]) -> [Entry] {
         entries.sorted { a, b in
             if a.isRoot != b.isRoot { return a.isRoot }
-            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            let byName = a.url.lastPathComponent.localizedStandardCompare(b.url.lastPathComponent)
+            return byName == .orderedSame ? a.url.path < b.url.path : byName == .orderedAscending
         }
     }
 }
@@ -158,10 +160,10 @@ nonisolated enum Volumes {
     /// The volumes worth showing a user, as they answer. The list of mount points and each volume are read
     /// on threads of their own (`Blocking`).
     ///
-    /// The first list comes when every volume has answered, or when `timeout` has passed: then with the
-    /// volumes that have not answered as entries without figures (and `isListed` false if not even the list
-    /// of mount points is there). A new list follows whenever one of those answers, and the stream ends
-    /// when all have. A volume that cannot be read is left out.
+    /// The first list comes when every volume has answered. If the mount points are not there after
+    /// `timeout`, a list says so (`isListed` false). If a volume has not answered `timeout` after it was
+    /// asked, a list has it as an entry without figures; a new list follows whenever such a volume answers.
+    /// The stream ends when all have. A volume that cannot be read is left out.
     ///
     /// A volume that never answers keeps its thread and leaves the stream open; whoever follows the stream
     /// stops by no longer asking.
@@ -173,14 +175,17 @@ nonisolated enum Volumes {
         // Every list is complete in itself, so only the newest matters to a reader that is behind.
         let (lists, continuation) = AsyncStream.makeStream(of: VolumeList.self, bufferingPolicy: .bufferingNewest(1))
         let overview = Overview(continuation)
+        continuation.onTermination = { [weak overview] _ in overview?.abandon() }
         Blocking.startThread("Volume list") {
             let urls = mountPoints()
             overview.listed(urls)
             for url in urls {
                 Blocking.startThread("Volume \(url.path)") { overview.answered(url, with: try? load(url)) }
             }
+            // The volumes' time runs from when they were asked, not from when the list was.
+            Blocking.after(timeout) { overview.volumesAreLate() }
         }
-        Blocking.after(timeout) { overview.timeIsUp() }
+        Blocking.after(timeout) { overview.listIsLate() }
         return lists
     }
 
@@ -208,14 +213,18 @@ nonisolated enum Volumes {
         private struct State {
             /// The mount points; nil until macOS has listed them.
             var urls: [URL]?
-            var infos: [URL: VolumeInfo] = [:]
-            /// Mount points whose read has ended, with figures or without.
-            var answered: Set<URL> = []
-            var isTimeUp = false
+            /// What each volume answered: its figures, or nil for one that could not be read. No entry
+            /// while it has not answered.
+            var answers: [URL: VolumeInfo?] = [:]
+            var isListLate = false
+            var areVolumesLate = false
             var isFinished = false
         }
         private let state = Mutex(State())
         private let continuation: AsyncStream<VolumeList>.Continuation
+        /// Nobody follows the stream any more. Not part of `state`: the stream says so while a list is
+        /// being sent, with the state locked.
+        private let isAbandoned = Atomic(false)
 
         init(_ continuation: AsyncStream<VolumeList>.Continuation) {
             self.continuation = continuation
@@ -227,30 +236,38 @@ nonisolated enum Volumes {
 
         /// One volume's answer; nil for one that could not be read.
         func answered(_ url: URL, with info: VolumeInfo?) {
-            change { state in
-                state.answered.insert(url)
-                state.infos[url] = info
-            }
+            change { $0.answers.updateValue(info, forKey: url) }
         }
 
-        func timeIsUp() {
-            change { $0.isTimeUp = true }
+        func listIsLate() {
+            change { $0.isListLate = true }
         }
 
-        /// Applies `change` and reports the list if there is something to show: everything has answered, or
-        /// the time is up and the reader gets what there is.
+        func volumesAreLate() {
+            change { $0.areVolumesLate = true }
+        }
+
+        func abandon() {
+            isAbandoned.store(true, ordering: .relaxed)
+        }
+
+        /// Applies `change` and reports the list if there is something to show: every volume has answered,
+        /// or the wait for what is still missing (the mount points, then the volumes) is over.
         private func change(_ change: (inout State) -> Void) {
             state.withLock { state in
-                guard !state.isFinished else { return }
+                guard !state.isFinished, !isAbandoned.load(ordering: .relaxed) else { return }
                 change(&state)
-                let urls = state.urls ?? []
-                let isComplete = state.urls != nil && urls.allSatisfy(state.answered.contains)
-                guard isComplete || state.isTimeUp else { return }
-                let entries = urls.compactMap { url -> VolumeList.Entry? in
-                    if let info = state.infos[url] { return VolumeList.Entry(url: url, info: info) }
-                    return state.answered.contains(url) ? nil : VolumeList.Entry(url: url)
+                guard let urls = state.urls else {
+                    if state.isListLate { continuation.yield(VolumeList(isListed: false)) }
+                    return
                 }
-                continuation.yield(VolumeList(isListed: state.urls != nil, entries: VolumeList.ordered(entries)))
+                let isComplete = urls.allSatisfy { state.answers[$0] != nil }
+                guard isComplete || state.areVolumesLate else { return }
+                let entries = urls.compactMap { url -> VolumeList.Entry? in
+                    guard let answer = state.answers[url] else { return VolumeList.Entry(url: url) }
+                    return answer.map { VolumeList.Entry(url: url, info: $0) }
+                }
+                continuation.yield(VolumeList(entries: VolumeList.ordered(entries)))
                 if isComplete {
                     state.isFinished = true
                     continuation.finish()
