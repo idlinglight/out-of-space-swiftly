@@ -28,8 +28,10 @@ nonisolated struct ScanOptions: Sendable {
 
     /// Other apps' containers in the user's home folder.
     static var defaultProtectedPaths: [String] {
-        let library = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library")
-        return ["Containers", "Group Containers"].map { library.appendingPathComponent($0).path }
+        // With the hints, making these URLs does not ask the disk whether they are folders.
+        let library = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent("Library", isDirectory: true)
+        return ["Containers", "Group Containers"].map { library.appendingPathComponent($0, isDirectory: true).path }
     }
 }
 
@@ -64,18 +66,23 @@ nonisolated final class Scan: Sendable {
     /// The name of the group under `/` that holds what exists only on the Data volume.
     static let dataVolumeGroupName = "Only on the Data volume"
 
-    let rootPath: String
     let options: ScanOptions
     let progress: AsyncStream<ScanProgress>
     private let progressContinuation: AsyncStream<ScanProgress>.Continuation
     private let engine: ScanEngine
 
-    init(root: URL, options: ScanOptions = ScanOptions()) {
-        let path = root.resolvingSymlinksInPath().path
-        rootPath = path
+    /// Creating a scan looks at nothing on disk, so it is safe on the main actor (ADR-0006); `run()` does
+    /// all of that on the scan's own threads, starting with the root (symbolic links in its path resolved).
+    ///
+    /// - Parameter beforeReading: Called with the root's real path on a thread of the scan, once the root
+    ///   is known and before anything in it is read; it may block. The place to start watching the root, so
+    ///   that no change falls between the scan and the watch. Not called for a scan cancelled before that.
+    init(
+        root: URL, options: ScanOptions = ScanOptions(), beforeReading: (@Sendable (String) -> Void)? = nil
+    ) {
         self.options = options
         (progress, progressContinuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
-        engine = ScanEngine(rootPath: path, options: options)
+        engine = ScanEngine(root: root, options: options, beforeReading: beforeReading)
     }
 
     func cancel() {
@@ -109,7 +116,7 @@ nonisolated final class Scan: Sendable {
         let duration = ContinuousClock.now - start
         let cancelled = engine.isCancelled
         Log.scan.notice("""
-            Scanned \(self.rootPath, privacy: .private): \(final.files, privacy: .public) files, \
+            Scanned \(tree.rootPath, privacy: .private): \(final.files, privacy: .public) files, \
             \(final.directories, privacy: .public) directories, \(final.failures, privacy: .public) failures \
             in \(duration, privacy: .public)\(cancelled ? ", cancelled" : "", privacy: .public)
             """)
@@ -144,8 +151,9 @@ private nonisolated struct FileKey: Hashable {
 /// touched with `wakeUp` locked, and every change is broadcast, so a thread about to sleep cannot miss new
 /// work; hence `@unchecked Sendable`. `builder` holds the tree and the sets that remove duplicates.
 private nonisolated final class ScanEngine: @unchecked Sendable {
-    let rootPath: String
+    let root: URL
     let options: ScanOptions
+    private let beforeReading: (@Sendable (String) -> Void)?
 
     private struct QueueState {
         var stack: [WorkItem] = []
@@ -174,6 +182,8 @@ private nonisolated final class ScanEngine: @unchecked Sendable {
     private let wakeUp = NSCondition()
     private var queueState = QueueState()
     private let builder: Mutex<Builder>
+    /// The root's real path, once `prepare()` has it.
+    private let preparedRoot = Mutex<String?>(nil)
     private let inFlight = Mutex<[Int: InFlight]>([:])
     private let slowNodes = Mutex<Set<NodeID>>([])
 
@@ -183,21 +193,16 @@ private nonisolated final class ScanEngine: @unchecked Sendable {
     private let failures = Atomic<Int>(0)
 
     static let dataVolumePath = "/System/Volumes/Data"
+    /// The setup thread's key in `inFlight`, where the scanning threads use their index.
+    private static let setupThread = -1
 
-    init(rootPath: String, options: ScanOptions) {
-        self.rootPath = rootPath
+    init(root: URL, options: ScanOptions, beforeReading: (@Sendable (String) -> Void)?) {
+        self.root = root
         self.options = options
-        var info = stat()
-        let found = lstat(rootPath, &info) == 0
-        let name = rootPath == "/"
-            ? ((try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeLocalizedNameKey]).volumeLocalizedName) ?? "/")
-            : URL(fileURLWithPath: rootPath).lastPathComponent
-        var state = Builder(tree: ScanTree(rootPath: rootPath, rootName: name,
-                                           device: found ? info.st_dev : 0, fileID: found ? info.st_ino : 0))
-        for path in options.protectedPaths where lstat(path, &info) == 0 {
-            state.protected.insert(FileKey(device: info.st_dev, number: info.st_ino))
-        }
-        builder = Mutex(state)
+        self.beforeReading = beforeReading
+        // Stands in until `prepare()` has looked at the root; a scan cancelled before that returns it.
+        builder = Mutex(Builder(tree: ScanTree(rootPath: root.path, rootName: root.lastPathComponent,
+                                               device: 0, fileID: 0)))
     }
 
     var isCancelled: Bool {
@@ -220,6 +225,7 @@ private nonisolated final class ScanEngine: @unchecked Sendable {
 
     /// Walks the root, then (for `/`) the Data volume.
     func run() async {
+        guard let rootPath = await prepare() else { return }
         await runPass(WorkItem(node: 0, name: "", path: rootPath))
         let group = builder.withLock { $0.dataGroup }
         if let group, !isCancelled {
@@ -261,6 +267,60 @@ private nonisolated final class ScanEngine: @unchecked Sendable {
         change(&queueState)
         wakeUp.broadcast()
         wakeUp.unlock()
+    }
+
+    /// Looks at the root and the protected paths on a thread of its own, since any of that can block, and
+    /// returns the root's real path; nil if the scan was cancelled first (the thread then finishes on its
+    /// own and changes nothing).
+    private func prepare() async -> String? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            var started = false
+            changeQueue { state in
+                guard !state.cancelled else { return }
+                state.waiter = continuation
+                started = true
+            }
+            guard started else { return continuation.resume() }
+            let thread = Thread { [self] in
+                ScanProcessSettings.applyToScanThread()
+                lookAtRoot()
+                var waiter: CheckedContinuation<Void, Never>?
+                changeQueue { state in
+                    waiter = state.waiter
+                    state.waiter = nil
+                }
+                waiter?.resume()
+            }
+            thread.name = "Scan setup"
+            thread.qualityOfService = .utility
+            thread.start()
+        }
+        return isCancelled ? nil : preparedRoot.withLock { $0 }
+    }
+
+    private func lookAtRoot() {
+        // Shown as what the scan is reading, and as keeping it waiting if the root takes long to answer.
+        inFlight.withLock { $0[Self.setupThread] = InFlight(node: 0, since: .now) }
+        defer { inFlight.withLock { _ = $0.removeValue(forKey: Self.setupThread) } }
+        let path = root.resolvingSymlinksInPath().path
+        var info = stat()
+        let found = lstat(path, &info) == 0
+        let name = path == "/"
+            ? ((try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeLocalizedNameKey]).volumeLocalizedName) ?? "/")
+            : URL(fileURLWithPath: path, isDirectory: true).lastPathComponent
+        let tree = ScanTree(rootPath: path, rootName: name,
+                            device: found ? info.st_dev : 0, fileID: found ? info.st_ino : 0)
+        var protected: Set<FileKey> = []
+        for path in options.protectedPaths where lstat(path, &info) == 0 {
+            protected.insert(FileKey(device: info.st_dev, number: info.st_ino))
+        }
+        builder.withLock { state in
+            guard !state.sealed else { return }
+            state.tree = tree
+            state.protected = protected
+        }
+        preparedRoot.withLock { $0 = path }
+        if !isCancelled { beforeReading?(path) }
     }
 
     private func runPass(_ first: WorkItem) async {
@@ -360,7 +420,7 @@ private nonisolated final class ScanEngine: @unchecked Sendable {
             children.append((entry.name, Self.node(for: entry)))
         }
         var group: (name: String, node: ScanTree.Node)?
-        if item.node == 0, rootPath == "/", options.includesDataVolume, Self.isMountPoint(Self.dataVolumePath) {
+        if item.node == 0, item.path == "/", options.includesDataVolume, Self.isMountPoint(Self.dataVolumePath) {
             group = (Scan.dataVolumeGroupName, ScanTree.Node(parent: 0, kind: .group))
         }
 

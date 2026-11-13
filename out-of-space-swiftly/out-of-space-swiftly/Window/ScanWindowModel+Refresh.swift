@@ -10,14 +10,21 @@ extension ScanWindowModel {
     /// Measured from the first change, not the last: a folder that never stops changing is still refreshed.
     static let refreshDelay: Duration = .seconds(2)
 
-    func watch(_ target: ScanTarget) {
+    /// Follows the watch that `setup` delivers: the scan starts it on a thread of its own before it reads
+    /// anything (`Scan.init`). Nothing is delivered for a scan stopped before it knew its root; cancelling
+    /// `watchTask` ends the wait.
+    func watch(_ target: ScanTarget, setup: AsyncStream<Result<FileSystemEvents, any Error>>) {
         watchTask?.cancel()
         watchTask = Task { [weak self] in
+            var delivery = setup.makeAsyncIterator()
             let events: FileSystemEvents
-            do {
-                events = try FileSystemEvents.watch(target.url)
-            } catch {
+            switch await delivery.next() {
+            case .success(let watch):
+                events = watch
+            case .failure(let error):
                 Log.app.error("Not watching \(target.path, privacy: .private): \(error.localizedDescription, privacy: .public)")
+                return
+            case nil:
                 return
             }
             for await batch in events.changes {
@@ -50,7 +57,7 @@ extension ScanWindowModel {
     }
 
     private func refreshPending() async {
-        guard let tree, let target else { return }
+        guard let tree, target != nil else { return }
         let changes = Self.coalesce(pendingChanges)
         pendingChanges = [:]
         setRefreshing(true)
@@ -58,7 +65,7 @@ extension ScanWindowModel {
         for change in changes {
             guard !Task.isCancelled, self.tree === tree else { return }
             let id: NodeID
-            switch Self.refreshTarget(for: change.path, in: tree, rootPath: target.path) {
+            switch Self.refreshTarget(for: change.path, in: tree, rootPath: tree.rootPath) {
             case .directory(let directory):
                 id = directory
             case .unseen:

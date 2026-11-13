@@ -126,11 +126,17 @@ nonisolated struct VolumeInfo: Sendable, Hashable, Identifiable {
 
 /// The mounted volumes.
 nonisolated enum Volumes {
-    /// The volumes worth showing a user, `/` first, the rest by name. Each is read on a thread of its own (the
-    /// calls block, so they stay off Swift's cooperative pool). One that takes longer than `timeout`, such as
-    /// a hung network mount, is left out and doesn't hold up the others; its thread finishes on its own.
+    /// The volumes worth showing a user, `/` first, the rest by name. The list of mount points and each
+    /// volume are read on threads of their own (`Blocking`). A volume that takes longer than `timeout`, such
+    /// as a hung network mount, is left out and doesn't hold up the others; its thread finishes on its own.
+    /// The timeout covers both; if the list itself takes that long, there are no volumes to show.
     static func browsable(timeout: Duration = .seconds(3)) async -> [VolumeInfo] {
-        ordered(await load(browsableVolumeURLs(), timeout: timeout) { try VolumeInfo.load($0) })
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        guard let urls = await Blocking.run("Volume list", timeout: timeout, { browsableVolumeURLs() }) else {
+            return []
+        }
+        return ordered(await load(urls, timeout: max(.zero, deadline - clock.now)) { try VolumeInfo.load($0) })
     }
 
     /// Mount points of the browsable volumes that aren't hidden (which leaves out the system's own volumes
@@ -159,13 +165,8 @@ nonisolated enum Volumes {
         }
     }
 
-    /// Runs `load` for every URL at once, each on a thread of its own; failures and late answers are left out.
-    ///
-    /// Neither the reads nor the timeout use GCD's global queues. Those get no further thread while as many
-    /// threads as there are cores are running, so in a process that keeps every core busy a read would start
-    /// late and the timeout would fire late. A thread of its own and a serial queue's block don't wait for
-    /// that pool. Both run at user-initiated priority, since someone is waiting for the answer; busy threads
-    /// of other work then delay them by hundredths of a second (docs/SCANNING.md, section 1).
+    /// Runs `load` for every URL at once, each on a thread of its own (`Blocking`), with one timeout for all;
+    /// failures and late answers are left out.
     static func load(
         _ urls: [URL], timeout: Duration, using load: @escaping @Sendable (URL) throws -> VolumeInfo
     ) async -> [VolumeInfo] {
@@ -173,18 +174,11 @@ nonisolated enum Volumes {
         return await withCheckedContinuation { continuation in
             let answers = Answers(awaited: urls.count, continuation: continuation)
             for url in urls {
-                let thread = Thread { answers.add(try? load(url)) }
-                thread.name = "Volume \(url.path)"
-                thread.qualityOfService = .userInitiated
-                thread.start()
+                Blocking.startThread("Volume \(url.path)") { answers.add(try? load(url)) }
             }
-            timeouts.asyncAfter(deadline: .now() + timeout / .seconds(1)) { answers.close() }
+            Blocking.after(timeout) { answers.close() }
         }
     }
-
-    private static let timeouts = DispatchQueue(
-        label: "at.idling.out-of-space-swiftly.volume-timeouts", qos: .userInitiated
-    )
 
     /// Collects the volumes as their threads deliver them and hands them over once: when the last one is in
     /// or when the time is up, whichever comes first. What arrives after that is dropped.

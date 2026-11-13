@@ -167,6 +167,47 @@ struct ScanTests {
         #expect(tree.size(of: tree.root) == fixture.allocatedSize("Library/Preferences/settings.plist"))
     }
 
+    @Test func theRootIsLookedAtWhenTheScanRunsNotWhenItIsCreated() async throws {
+        let fixture = try FixtureTree()
+        let scan = Scan(root: fixture.url("later"), options: .fixture)
+        try fixture.file("later/one.bin", size: 10_000)
+        let tree = await scan.run().tree
+        #expect(tree.node(tree.root).fileID != 0)
+        #expect(find("one.bin", in: tree) != nil)
+    }
+
+    @Test func aSymbolicLinkAsTheRootIsResolved() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("real/one.bin", size: 10_000)
+        try FileManager.default.createSymbolicLink(at: fixture.url("link"), withDestinationURL: fixture.url("real"))
+        let tree = await Scan(root: fixture.url("link"), options: .fixture).run().tree
+        #expect(tree.rootPath == fixture.url("real").path)
+        #expect(tree.name(of: tree.root) == "real")
+        #expect(find("one.bin", in: tree) != nil)
+    }
+
+    @Test func theRootIsAnnouncedBeforeAnythingInItIsRead() async throws {
+        let fixture = try FixtureTree()
+        try fixture.file("real/one.bin", size: 10_000)
+        try FileManager.default.createSymbolicLink(at: fixture.url("link"), withDestinationURL: fixture.url("real"))
+        // What the announcement puts into the root is found by the scan, so it came before the reading.
+        let scan = Scan(root: fixture.url("link"), options: .fixture) { rootPath in
+            FileManager.default.createFile(atPath: rootPath + "/made-in-time.bin", contents: Data(count: 10))
+        }
+        let tree = await scan.run().tree
+        #expect(find("made-in-time.bin", in: tree) != nil)
+        #expect(FileManager.default.fileExists(atPath: fixture.url("real/made-in-time.bin").path))
+    }
+
+    @Test func aScanCancelledBeforeTheStartAnnouncesNothing() async throws {
+        let fixture = try FixtureTree()
+        let announced = Flag()
+        let scan = Scan(root: fixture.root, options: .fixture) { _ in announced.set() }
+        scan.cancel()
+        _ = await scan.run()
+        #expect(announced.isSet == false)
+    }
+
     @Test func cancellingBeforeTheStartReturnsAtOnce() async throws {
         let fixture = try FixtureTree()
         try fixture.file("a/b.bin", size: 1_000)

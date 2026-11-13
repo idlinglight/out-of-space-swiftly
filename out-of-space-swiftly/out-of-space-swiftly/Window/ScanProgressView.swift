@@ -8,7 +8,7 @@ struct ScanProgressView: View {
         VStack(spacing: 20) {
             ProgressView()
                 .controlSize(.large)
-            Text("Scanning \(model.target?.displayName ?? "")…")
+            Text("Scanning \(model.target.map { model.name(of: $0) } ?? "")…")
                 .font(.title3)
             ScanCounts(progress: model.progress)
             Text(model.progress.currentPath ?? " ")

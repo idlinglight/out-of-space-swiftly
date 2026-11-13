@@ -8,7 +8,7 @@ struct ScanWindow: View {
 
     var body: some View {
         ScanWindowContent(model: model, choose: choose)
-            .navigationTitle(target?.displayName ?? "Out Of Space Swiftly")
+            .navigationTitle(target.map { model.name(of: $0) } ?? "Out Of Space Swiftly")
             .navigationSubtitle(model.phase == .finished ? ByteCount.text(model.totalSize) : "")
             .focusedSceneValue(\.scanWindow, model)
             .onDisappear { model.close() }
@@ -27,7 +27,7 @@ struct ScanWindow: View {
     }
 
     private func choose(_ url: URL) {
-        let chosen = ScanTarget(path: url.resolvingSymlinksInPath().path)
+        let chosen = ScanTarget(url)
         // The same folder again (say, after stopping a scan) means: scan it again.
         if chosen == target { model.start(chosen) } else { target = chosen }
     }

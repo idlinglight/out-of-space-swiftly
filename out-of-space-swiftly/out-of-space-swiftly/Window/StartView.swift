@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 struct StartView: View {
     let choose: (URL) -> Void
     @State private var isDropTargeted = false
+    /// Finding out whether a dropped item is a folder; its answer counts only while this view is up.
+    @State private var dropCheck: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 24) {
@@ -20,7 +22,7 @@ struct StartView: View {
             HStack(spacing: 12) {
                 Button("Choose Folder…", action: openPanel)
                     .keyboardShortcut(.defaultAction)
-                Button("Home Folder") { choose(URL(fileURLWithPath: NSHomeDirectory())) }
+                Button("Home Folder") { choose(URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)) }
             }
             .controlSize(.large)
             VolumesOverview(choose: choose)
@@ -33,10 +35,21 @@ struct StartView: View {
                 .padding(8)
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first, url.hasDirectoryPath || Self.isDirectory(url) else { return false }
-            choose(url)
+            guard let url = urls.first, url.isFileURL else { return false }
+            if url.hasDirectoryPath {
+                choose(url)
+            } else {
+                // A folder's URL may come without the trailing slash; only the disk can tell, and it can block.
+                dropCheck?.cancel()
+                dropCheck = Task {
+                    let isFolder = await Blocking.run("Dropped item") { Self.isDirectory(url) }
+                    guard !Task.isCancelled else { return }
+                    if isFolder { choose(url) } else { NSSound.beep() }
+                }
+            }
             return true
         } isTargeted: { isDropTargeted = $0 }
+        .onDisappear { dropCheck?.cancel() }
         .frame(minWidth: 600, minHeight: 460)
     }
 
@@ -50,7 +63,7 @@ struct StartView: View {
         if panel.runModal() == .OK, let url = panel.url { choose(url) }
     }
 
-    private static func isDirectory(_ url: URL) -> Bool {
+    private nonisolated static func isDirectory(_ url: URL) -> Bool {
         (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 }

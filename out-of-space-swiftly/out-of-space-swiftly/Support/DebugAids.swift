@@ -41,7 +41,7 @@ enum DebugAids {
             }
         }
         if let path = environment["OOSS_SCAN"] {
-            choose(URL(fileURLWithPath: path))
+            choose(URL(fileURLWithPath: path, isDirectory: true))
         }
         guard environment["OOSS_SCAN"] != nil || environment["OOSS_SNAPSHOT"] != nil else { return }
         Task {
