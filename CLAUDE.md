@@ -31,6 +31,8 @@
 - Tests and debug runs never scan protected or personal locations (`~/Library`, Desktop, Documents,
   Downloads, cloud storage, other volumes) and never move real files to the Trash: point them at generated
   trees.
+- `Scripts/release.sh` signs with the user's Developer ID key and uploads the app to Apple's notary
+  service: run it only when asked. Its credentials live in the keychain, never in the repository.
 - Every pull request runs `.github/workflows/ci.yml` (job `build-and-test`, a required check on `main`).
   Actions are pinned by full commit SHA with a version comment; the repository only allows actions from
   GitHub's own organizations.
