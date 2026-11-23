@@ -42,13 +42,30 @@ xcode_failed() {  # step, log
 zip_app() { ditto -c -k --norsrc --noextattr --noacl --keepParent "$1" "$2"; }
 
 # Uploads $1 to the notary service and waits for the verdict. Apple's log goes to notary-$2.json.
+# Uploading and waiting are separate calls, each tried up to three times: a connection lost while waiting
+# once ended a run whose submission Apple had accepted. Waiting again on a submission is harmless; a new
+# upload only follows one that got no submission ID.
 notarize() {
-  local submission verdict issues
-  xcrun notarytool submit "$1" "${notary[@]}" --wait --timeout 1h \
-    --output-format json > "$out/notary-$2-submit.json" 2> "$out/notarytool.log" || true
-  submission=$(jq -r '.id // empty' "$out/notary-$2-submit.json" 2>/dev/null || true)
+  local submission="" verdict="" issues attempt
+  for attempt in 1 2 3; do
+    xcrun notarytool submit "$1" "${notary[@]}" --output-format json \
+      > "$out/notary-$2-submit.json" 2> "$out/notarytool.log" || true
+    submission=$(jq -r '.id // empty' "$out/notary-$2-submit.json" 2>/dev/null || true)
+    [[ -z "$submission" && $attempt -lt 3 ]] || break
+    print -ru2 -- "The upload failed, trying again: $(head -1 "$out/notarytool.log")"
+    sleep 15
+  done
   [[ -n "$submission" ]] || fail "The upload of $1 to the notary service failed: $(<"$out/notarytool.log")"
-  verdict=$(jq -r '.status // empty' "$out/notary-$2-submit.json")
+  for attempt in 1 2 3; do
+    xcrun notarytool wait "$submission" "${notary[@]}" --timeout 1h --output-format json \
+      > "$out/notary-$2-wait.json" 2> "$out/notarytool.log" || true
+    verdict=$(jq -r '.status // empty' "$out/notary-$2-wait.json" 2>/dev/null || true)
+    [[ -z "$verdict" && $attempt -lt 3 ]] || break
+    print -ru2 -- "Waiting for submission $submission failed, trying again: $(head -1 "$out/notarytool.log")"
+    sleep 15
+  done
+  [[ -n "$verdict" ]] \
+    || fail "Waiting for the notary service failed (submission $submission): $(<"$out/notarytool.log")"
   xcrun notarytool log "$submission" "${notary[@]}" "$out/notary-$2.json" > /dev/null 2>&1 || true
   issues=$(jq -r '.issues[]? | "  \(.path // "-"): \(.message)"' "$out/notary-$2.json" 2>/dev/null || true)
   if [[ "$verdict" != Accepted ]]; then
