@@ -5,7 +5,7 @@
 
 commit=$(git rev-parse --short=7 HEAD)
 branch=$(git branch --show-current)
-[[ -n "$branch" ]] || branch=detached
+[[ -n "$branch" ]] || branch=$(git describe --tags --exact-match 2>/dev/null || echo detached)  # a tag in CI
 count=$(git rev-list --count HEAD)
 dirty=0
 [[ -z "$(git status --porcelain --untracked-files=no)" ]] || dirty=1

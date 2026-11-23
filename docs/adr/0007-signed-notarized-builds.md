@@ -1,7 +1,7 @@
 # ADR-0007: Signed and notarized builds
 
-Status: provisional, 2026-11-23. It covers builds made on a developer's Mac and is rewritten when GitHub
-Actions makes the releases.
+Status: accepted, 2026-11-23; replaces the provisional version of the same day, which covered only builds
+made on a developer's Mac
 
 ## Context
 
@@ -19,18 +19,21 @@ be revoked, which can stop every build signed with it from opening.
 
 ## Decision
 
-- `Scripts/release.sh` makes the build: a Release archive of a clean commit, stamped like `build.sh`
+- `Scripts/release.sh` makes a build: a Release archive of a clean commit, stamped like `build.sh`
   stamps it, exported for Developer ID (Hardened Runtime, secure timestamp), notarized with `notarytool`,
   the ticket stapled to the app. That app goes into a disk image, with a link to `/Applications`, which
   is signed, notarized and stapled in turn, and into a zip. Before it reports success the script checks
   what a recipient gets the way Gatekeeper does: the disk image, the app in it, and the app unpacked from
   the zip.
-- The credentials stay in the keychain of the Mac that makes the build: the signing identity, chosen by
-  its fingerprint when more than one is installed, and a `notarytool` profile. None of it is in the
-  repository.
+- Releases come from GitHub Actions. Pushing a tag `v<version>` runs `.github/workflows/release.yml`,
+  which waits for approval in the protected environment `release`, runs the script and drafts a GitHub
+  Release with the disk image and the zip. The draft is published by hand. A tag with a suffix makes a
+  prerelease, which is also how the workflow is tried from a branch.
+- The credentials are never in the repository. In CI they are secrets of the `release` environment,
+  which only `v*` tags reach; the job imports them into a keychain of its own and deletes it at the end.
+  On a developer's Mac they are in the keychain, where the script also runs, to try a change to it
+  without a release.
 - The certificate and the API key are used for this app only, so revoking either touches nothing else.
-- The next step: GitHub Actions runs the same script for a version tag and publishes the disk image and
-  the zip as a GitHub Release. This ADR is rewritten then.
 
 ## Consequences
 
@@ -38,6 +41,10 @@ be revoked, which can stop every build signed with it from opening.
   image, since the app carries its own ticket.
 - Every build is uploaded twice to Apple (the app, then the disk image) and waits for the notary service,
   usually a minute or two each time.
-- The certificate expires. Builds signed before that keep opening; new ones need a renewed certificate.
+- A release needs the owner twice: to approve the run and to publish the draft.
+- The certificate's private key lives in two places, the owner's keychain and the environment's secrets;
+  a leak from either means revoking it.
+- The certificate expires. Builds signed before that keep opening; new releases need a renewed
+  certificate and new secrets.
 - Who can open a build depends on the deployment target (ADR-0001).
-- No updater and no App Store. Until the GitHub Releases exist, builds are handed over by hand.
+- No updater and no App Store: new versions show up on the Releases page only.
