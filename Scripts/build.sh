@@ -5,8 +5,8 @@
 #   Scripts/build.sh            build only; prints where the app is
 #   Scripts/build.sh --install  build, then install into ~/Applications and launch
 #
-# The stamp (commit, branch, uncommitted-changes flag, date) lands in Info.plist through build settings
-# and shows in the About panel. The build number is the commit count. Nothing is installed unless the
+# The stamp (commit, branch, uncommitted-changes flag, date; see stamp.zsh) lands in Info.plist through
+# build settings and shows in the About panel. The build number is the commit count. Nothing is installed unless the
 # build succeeded and the stamp is verified in the product.
 set -euo pipefail
 
@@ -16,23 +16,12 @@ scheme=out-of-space-swiftly
 name="Out Of Space Swiftly"  # PRODUCT_NAME: the app bundle, its executable and the name the Dock shows
 out=build
 
-commit=$(git rev-parse --short=7 HEAD)
-branch=$(git branch --show-current)
-[[ -n "$branch" ]] || branch=detached
-count=$(git rev-list --count HEAD)
-dirty=0
-[[ -z "$(git status --porcelain --untracked-files=no)" ]] || dirty=1
-date=$(date '+%Y-%m-%d %H:%M')
-
-note="commit $commit on $branch, build $count"
-[[ $dirty = 1 ]] && note="$note, with uncommitted changes"
+source Scripts/stamp.zsh
 echo "Building $scheme (Release): $note"
 
 mkdir -p "$out"
 log="$out/xcodebuild.log"
-if ! xcodebuild -project "$project" -scheme "$scheme" -configuration Release build \
-    CURRENT_PROJECT_VERSION="$count" \
-    OOSS_COMMIT="$commit" OOSS_BRANCH="$branch" OOSS_BUILD_DATE="$date" OOSS_DIRTY="$dirty" \
+if ! xcodebuild -project "$project" -scheme "$scheme" -configuration Release build "${stamp_settings[@]}" \
     > "$log" 2>&1; then
   echo "Build failed. Errors:"
   grep -E 'error:' "$log" | sed 's/^ *//' | sort -u | head -20
