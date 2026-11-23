@@ -18,8 +18,10 @@ be revoked, which can stop every copy signed with it from opening.
 
 - `Scripts/release.sh` makes the copy: a Release archive of a clean commit, stamped like `build.sh`
   stamps it, exported for Developer ID (Hardened Runtime, secure timestamp), notarized with `notarytool`,
-  the ticket stapled, zipped. Before it reports success it unpacks the zip and checks the app inside the
-  way Gatekeeper does.
+  the ticket stapled to the app. That app goes into a disk image, with a link to `/Applications`, which
+  is signed, notarized and stapled in turn, and into a zip. Before it reports success the script checks
+  what a recipient gets the way Gatekeeper does: the disk image, the app in it, and the app unpacked from
+  the zip.
 - The credentials stay in the keychain of the Mac that makes the release: the signing identity, chosen
   by its fingerprint when more than one is installed, and a `notarytool` profile. None of it is in the
   repository.
@@ -29,8 +31,10 @@ be revoked, which can stop every copy signed with it from opening.
 
 ## Consequences
 
-- A shared copy opens like any downloaded app, also offline.
-- Every release uploads the app to Apple and waits for the notary service, usually a few minutes.
+- A shared copy opens like any downloaded app, also offline, and also once it has been dragged out of
+  the disk image, since the app carries its own ticket.
+- Every release uploads twice to Apple (the app, then the disk image) and waits for the notary service,
+  usually a minute or two each time.
 - The certificate expires. Copies signed before that keep opening; new releases need a renewed one.
 - The deployment target now decides who can open a shared copy, so raising it is no longer free
   (ADR-0001 let it follow the newest macOS).

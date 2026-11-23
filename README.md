@@ -53,9 +53,9 @@ xcodebuild -project out-of-space-swiftly/out-of-space-swiftly.xcodeproj -scheme 
 also replaces `~/Applications/Out Of Space Swiftly.app` with it and launches it.
 
 `Scripts/release.sh` makes a copy to give to someone: archived from a clean commit, signed with a
-Developer ID, notarized by Apple and zipped, in `build/release/`. It takes the signing identity and a
-`notarytool` profile from the keychain; its header says how to set them up and how to choose an identity
-when several are installed.
+Developer ID and notarized by Apple, as a disk image and a zip in `build/release/`. It takes the signing
+identity and a `notarytool` profile from the keychain; its header says how to set them up and how to
+choose an identity when several are installed.
 
 Debug builds can be driven from a shell (scan a folder, zoom, select, write a snapshot of the window and
 quit) through `OOSS_*` environment variables; see `Support/DebugAids.swift`.

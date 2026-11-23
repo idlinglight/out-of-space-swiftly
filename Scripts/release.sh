@@ -1,8 +1,9 @@
 #!/bin/zsh
 # Makes a copy of the app to give to others: a Release archive of the current commit, stamped as build.sh
-# stamps it, signed with a Developer ID, notarized by Apple with the ticket stapled to the app, and zipped.
+# stamps it, signed with a Developer ID and notarized by Apple, as a disk image and as a zip:
 #
-#   Scripts/release.sh   ->   build/release/<version>-<build>/Out-Of-Space-Swiftly-<version>-<build>.zip
+#   Scripts/release.sh   ->   build/release/<version>-<build>/Out-Of-Space-Swiftly-<version>-<build>.dmg
+#                                                                 and the same name with .zip
 #
 # It needs a clean working tree and two things in the keychain, neither of which is in the repository:
 # - A "Developer ID Application" identity of the project's team. With more than one installed, choose one
@@ -13,9 +14,12 @@
 #       --key AuthKey_<key id>.p8 --key-id <key id> --issuer <issuer id>
 #   Another name: OOSS_NOTARY_PROFILE=<name>, or once per clone `git config ooss.notaryProfile <name>`.
 #
-# The app is uploaded to Apple's notary service, which usually answers within minutes. The archive (with
-# the dSYMs), the logs and Apple's notary log stay next to the zip. Before it reports success, the script
-# unpacks the zip with plain unzip and checks the copy inside as Gatekeeper would.
+# The app is notarized and its ticket stapled to it, so a copy taken out of the disk image or the zip
+# opens on its own, also offline. The disk image (the app and a link to /Applications) is signed,
+# notarized and stapled as well. Each upload to Apple's notary service usually takes a minute or two.
+# Before it reports success, the script checks what a recipient gets as Gatekeeper would: the disk image,
+# the app in it, and the app unpacked from the zip with plain unzip. The archive (with the dSYMs), the
+# logs and Apple's notary logs stay next to the results.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -24,14 +28,48 @@ scheme=out-of-space-swiftly
 
 fail() { print -u2 -- "$*"; exit 1; }
 
-# Without extended attributes: ditto would keep them in "._" files, which every unzip tool but Finder's
-# leaves in the bundle as extra files that break the signature. A signed app needs none of them.
-zip_app() { ditto -c -k --norsrc --noextattr --noacl --keepParent "$1" "$2"; }
-
 xcode_failed() {  # step, log
   print -u2 -- "$1 failed. Errors:"
   grep -E 'error:' "$2" | sed 's/^ *//' | sort -u | head -20 >&2
   fail "Full log: $2"
+}
+
+# Without extended attributes: ditto would keep them in "._" files, which every unzip tool but Finder's
+# leaves in the bundle as extra files that break the signature. A signed app needs none of them.
+zip_app() { ditto -c -k --norsrc --noextattr --noacl --keepParent "$1" "$2"; }
+
+# Uploads $1 to the notary service and waits for the verdict. Apple's log goes to notary-$2.json.
+notarize() {
+  local submission verdict issues
+  xcrun notarytool submit "$1" --keychain-profile "$profile" --wait --timeout 1h \
+    --output-format json > "$out/notary-$2-submit.json" 2> "$out/notarytool.log" || true
+  submission=$(jq -r '.id // empty' "$out/notary-$2-submit.json" 2>/dev/null || true)
+  [[ -n "$submission" ]] || fail "The upload of $1 to the notary service failed: $(<"$out/notarytool.log")"
+  verdict=$(jq -r '.status // empty' "$out/notary-$2-submit.json")
+  xcrun notarytool log "$submission" --keychain-profile "$profile" "$out/notary-$2.json" > /dev/null 2>&1 || true
+  issues=$(jq -r '.issues[]? | "  \(.path // "-"): \(.message)"' "$out/notary-$2.json" 2>/dev/null || true)
+  if [[ "$verdict" != Accepted ]]; then
+    [[ -z "$issues" ]] || print -u2 -- "$issues"
+    fail "Notarization of $1: ${verdict:-no result} (submission $submission). Apple's log: $out/notary-$2.json"
+  fi
+  [[ -z "$issues" ]] || print -- "Accepted, with notes from Apple:\n$issues"
+}
+
+staple() { xcrun stapler staple "$1" > "$out/stapler.log" 2>&1 || fail "Stapling $1 failed: $(<"$out/stapler.log")"; }
+
+# Fails unless Gatekeeper's assessment ($1) names a notarized Developer ID signature; $2 says of what.
+expect_notarized() {
+  [[ "$1" == *'source=Notarized Developer ID'* ]] || fail "Gatekeeper does not accept $2 as notarized: $1"
+}
+
+# Checks the app at $1 as Gatekeeper on another Mac would; $2 says where it came from.
+check_app() {
+  local assessment
+  xcrun stapler validate "$1" > /dev/null 2>&1 || fail "The app $2 has no valid ticket."
+  codesign --verify --deep --strict "$1" 2> "$out/codesign.log" \
+    || fail "The signature of the app $2 does not verify: $(<"$out/codesign.log")"
+  assessment=$(spctl --assess --type execute --verbose=2 "$1" 2>&1 || true)
+  expect_notarized "$assessment" "the app $2"
 }
 
 [[ -z "$(git status --porcelain)" ]] || fail "The working tree has changes (see git status); a release is made from a commit."
@@ -66,7 +104,7 @@ out=build/release/$version-$count
 archive=$out/$name.xcarchive
 exported=$out/export
 app=$exported/$name.app
-zip=$out/${name// /-}-$version-$count.zip
+base=$out/${name// /-}-$version-$count
 rm -rf "$out"
 mkdir -p "$out"
 
@@ -119,40 +157,55 @@ entitlements=$(codesign -d --entitlements - --xml "$app" 2>/dev/null || true)
 stamped=$(plutil -extract OOSSCommit raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)
 [[ "$stamped" == "$commit" ]] || fail "The app carries no stamp (got '$stamped')."
 
-echo "Notarizing (waiting for Apple's notary service)"
+echo "Notarizing the app"
 zip_app "$app" "$out/upload.zip"
-xcrun notarytool submit "$out/upload.zip" --keychain-profile "$profile" --wait --timeout 1h \
-  --output-format json > "$out/notary-submit.json" 2> "$out/notarytool.log" || true
+notarize "$out/upload.zip" app
 rm -f "$out/upload.zip"
-submission=$(jq -r '.id // empty' "$out/notary-submit.json" 2>/dev/null || true)
-[[ -n "$submission" ]] || fail "The upload to the notary service failed: $(<"$out/notarytool.log")"
-verdict=$(jq -r '.status // empty' "$out/notary-submit.json")
-xcrun notarytool log "$submission" --keychain-profile "$profile" "$out/notary-log.json" > /dev/null 2>&1 || true
-issues=$(jq -r '.issues[]? | "  \(.path // "-"): \(.message)"' "$out/notary-log.json" 2>/dev/null || true)
-if [[ "$verdict" != Accepted ]]; then
-  [[ -z "$issues" ]] || print -u2 -- "$issues"
-  fail "Notarization: ${verdict:-no result} (submission $submission). Apple's log: $out/notary-log.json"
-fi
-[[ -z "$issues" ]] || print -- "Accepted, with notes from Apple:\n$issues"
+staple "$app"
 
-echo "Stapling the ticket"
-xcrun stapler staple "$app" > "$out/stapler.log" 2>&1 || fail "Stapling failed: $(<"$out/stapler.log")"
+zip_app "$app" "$base.zip"
 
-zip_app "$app" "$zip"
+echo "Making the disk image"
+# hdiutil create, attach and detach print deprecation warnings on macOS 27 that point to `diskutil image`
+# and `diskutil eject`; their output goes to hdiutil.log. hdiutil stays until the replacement is known to
+# exist wherever the script runs.
+staging=$out/dmg
+mkdir "$staging"
+ditto "$app" "$staging/$name.app"
+ln -s /Applications "$staging/Applications"
+hdiutil create -volname "$name" -srcfolder "$staging" -fs HFS+ -format UDZO "$base.dmg" > "$out/hdiutil.log" 2>&1 \
+  || fail "Making the disk image failed: $(<"$out/hdiutil.log")"
+rm -rf "$staging"
+codesign --sign "$identity" --timestamp "$base.dmg" 2> "$out/codesign.log" \
+  || fail "Signing the disk image failed: $(<"$out/codesign.log")"
+
+echo "Notarizing the disk image"
+notarize "$base.dmg" dmg
+staple "$base.dmg"
 
 echo "Checking the copy in the zip"
 check=$out/check
-unzip -q "$zip" -d "$check"
-received=$check/$name.app
-xcrun stapler validate "$received" > /dev/null 2>&1 || fail "The app in the zip has no valid ticket."
-codesign --verify --deep --strict "$received" 2> "$out/codesign.log" \
-  || fail "The signature of the app in the zip does not verify: $(<"$out/codesign.log")"
-assessment=$(spctl --assess --type execute --verbose=2 "$received" 2>&1) \
-  || fail "Gatekeeper refuses the app in the zip: $assessment"
-[[ "$assessment" == *'source=Notarized Developer ID'* ]] \
-  || fail "Gatekeeper accepts the app in the zip, but not as notarized: $assessment"
+unzip -q "$base.zip" -d "$check"
+check_app "$check/$name.app" "in the zip"
 rm -rf "$check"
 
-echo "Released $zip"
-echo "  $name $version ($count), $note"
-echo "  SHA-256 $(shasum -a 256 "$zip" | cut -d' ' -f1)"
+echo "Checking the disk image"
+xcrun stapler validate "$base.dmg" > /dev/null 2>&1 || fail "The disk image has no valid ticket."
+expect_notarized "$(spctl --assess --type open --context context:primary-signature --verbose=2 "$base.dmg" 2>&1 || true)" \
+  "the disk image"
+mount=$out/mount
+mkdir "$mount"
+trap 'hdiutil detach "$mount" -force > /dev/null 2>&1 || true' EXIT
+hdiutil attach "$base.dmg" -readonly -nobrowse -noautoopen -mountpoint "$mount" > /dev/null 2> "$out/hdiutil.log" \
+  || fail "Mounting the disk image failed: $(<"$out/hdiutil.log")"
+check_app "$mount/$name.app" "in the disk image"
+[[ "$(readlink "$mount/Applications")" == /Applications ]] || fail "The disk image lacks its link to /Applications."
+hdiutil detach "$mount" > /dev/null
+trap - EXIT
+rmdir "$mount" 2>/dev/null || true
+
+echo "Released $name $version ($count), $note"
+for result in "$base.dmg" "$base.zip"; do
+  echo "  $result"
+  echo "    SHA-256 $(shasum -a 256 "$result" | cut -d' ' -f1)"
+done
