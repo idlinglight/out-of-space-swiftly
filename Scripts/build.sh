@@ -24,7 +24,7 @@ log="$out/xcodebuild.log"
 if ! xcodebuild -project "$project" -scheme "$scheme" -configuration Release build "${stamp_settings[@]}" \
     > "$log" 2>&1; then
   echo "Build failed. Errors:"
-  grep -E 'error:' "$log" | sed 's/^ *//' | sort -u | head -20
+  { grep -E 'error:' "$log" || true; } | sed 's/^ *//' | sort -u | head -20
   echo "Full log: $log"
   exit 1
 fi

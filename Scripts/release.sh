@@ -2,8 +2,8 @@
 # Makes a copy of the app to give to others: a Release archive of the current commit, stamped as build.sh
 # stamps it, signed with a Developer ID and notarized by Apple, as a disk image and as a zip:
 #
-#   Scripts/release.sh   ->   build/release/<version>-<build>/Out-Of-Space-Swiftly-<version>-<build>.dmg
-#                                                                 and the same name with .zip
+#   Scripts/release.sh
+#     -> build/release/<version>-<build>-<commit>/Out-Of-Space-Swiftly-<version>-<build>.dmg and .zip
 #
 # It needs a clean working tree and two things in the keychain, neither of which is in the repository:
 # - A "Developer ID Application" identity of the project's team. With more than one installed, choose one
@@ -26,11 +26,12 @@ cd "$(dirname "$0")/.."
 project=out-of-space-swiftly/out-of-space-swiftly.xcodeproj
 scheme=out-of-space-swiftly
 
-fail() { print -u2 -- "$*"; exit 1; }
+# Messages may carry log text, so print takes them raw (-r), without acting on backslashes.
+fail() { print -ru2 -- "$*"; exit 1; }
 
 xcode_failed() {  # step, log
-  print -u2 -- "$1 failed. Errors:"
-  grep -E 'error:' "$2" | sed 's/^ *//' | sort -u | head -20 >&2
+  print -ru2 -- "$1 failed. Errors:"
+  { grep -E 'error:' "$2" || true; } | sed 's/^ *//' | sort -u | head -20 >&2
   fail "Full log: $2"
 }
 
@@ -49,10 +50,10 @@ notarize() {
   xcrun notarytool log "$submission" --keychain-profile "$profile" "$out/notary-$2.json" > /dev/null 2>&1 || true
   issues=$(jq -r '.issues[]? | "  \(.path // "-"): \(.message)"' "$out/notary-$2.json" 2>/dev/null || true)
   if [[ "$verdict" != Accepted ]]; then
-    [[ -z "$issues" ]] || print -u2 -- "$issues"
+    [[ -z "$issues" ]] || print -ru2 -- "$issues"
     fail "Notarization of $1: ${verdict:-no result} (submission $submission). Apple's log: $out/notary-$2.json"
   fi
-  [[ -z "$issues" ]] || print -- "Accepted, with notes from Apple:\n$issues"
+  [[ -z "$issues" ]] || print -rl -- "Accepted, with notes from Apple:" "$issues"
 }
 
 staple() { xcrun stapler staple "$1" > "$out/stapler.log" 2>&1 || fail "Stapling $1 failed: $(<"$out/stapler.log")"; }
@@ -100,16 +101,23 @@ elif (( ! ${identities[(Ie)$identity]} )); then
 fi
 profile=${OOSS_NOTARY_PROFILE:-$(git config --get ooss.notaryProfile || echo out-of-space-swiftly)}
 
-out=build/release/$version-$count
+# The commit in the folder name keeps a release of another commit with the same build number (the same
+# commit count on another branch) from replacing this one.
+out=build/release/$version-$count-$commit
 archive=$out/$name.xcarchive
 exported=$out/export
 app=$exported/$name.app
 base=$out/${name// /-}-$version-$count
+mount=$out/mount
+detach_image() { hdiutil detach "$mount" -force > /dev/null 2>&1 || true; }
+[[ ! -d "$mount" ]] || detach_image  # left attached by an earlier run of this commit that was killed
 rm -rf "$out"
 mkdir -p "$out"
 
 echo "Releasing $name $version ($count): $note"
 echo "Signing identity $identity, notary profile $profile"
+git merge-base --is-ancestor HEAD origin/main 2>/dev/null \
+  || echo "Note: $commit is not on origin/main (as last fetched), so the public repository may not have the commit this copy names."
 
 # Fail before the build, not after it, if the notary credentials do not work.
 xcrun notarytool history --keychain-profile "$profile" > /dev/null 2> "$out/notarytool.log" \
@@ -145,8 +153,9 @@ xcodebuild -exportArchive -archivePath "$archive" -exportPath "$exported" \
 
 echo "Checking the signature"
 codesign --verify --deep --strict "$app" 2> "$out/codesign.log" || fail "The signature does not verify: $(<"$out/codesign.log")"
-details=$(codesign -d --verbose=2 "$app" 2>&1)
-codesign -d --extract-certificates="$out/signer-" "$app" 2>/dev/null
+details=$(codesign -d --verbose=2 "$app" 2>&1) || fail "Could not read the app's signature: $details"
+codesign -d --extract-certificates="$out/signer-" "$app" 2> "$out/codesign.log" \
+  || fail "Could not extract the app's certificates: $(<"$out/codesign.log")"
 signer=$(shasum -a 1 < "$out/signer-0" | cut -d' ' -f1)
 rm -f -- "$out"/signer-*(N)
 [[ ${(U)signer} == "$identity" ]] || fail "The app is signed by $signer, not by $identity."
@@ -193,15 +202,16 @@ echo "Checking the disk image"
 xcrun stapler validate "$base.dmg" > /dev/null 2>&1 || fail "The disk image has no valid ticket."
 expect_notarized "$(spctl --assess --type open --context context:primary-signature --verbose=2 "$base.dmg" 2>&1 || true)" \
   "the disk image"
-mount=$out/mount
 mkdir "$mount"
-trap 'hdiutil detach "$mount" -force > /dev/null 2>&1 || true' EXIT
+# zsh runs EXIT traps on exit and on errors, but not when a signal ends the script.
+trap detach_image EXIT
+trap 'detach_image; exit 130' INT TERM HUP
 hdiutil attach "$base.dmg" -readonly -nobrowse -noautoopen -mountpoint "$mount" > /dev/null 2>> "$out/hdiutil.log" \
   || fail "Mounting the disk image failed: $(<"$out/hdiutil.log")"
 check_app "$mount/$name.app" "in the disk image"
 [[ "$(readlink "$mount/Applications")" == /Applications ]] || fail "The disk image lacks its link to /Applications."
 hdiutil detach "$mount" > /dev/null 2>> "$out/hdiutil.log" || fail "Detaching the disk image failed: $(<"$out/hdiutil.log")"
-trap - EXIT
+trap - EXIT INT TERM HUP
 rmdir "$mount" 2>/dev/null || true
 
 echo "Released $name $version ($count), $note"
