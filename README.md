@@ -3,7 +3,7 @@
 A macOS app that shows where the space on a disk went: it scans a folder or volume and draws the result
 as a treemap, natively, with Apple's frameworks and nothing else.
 
-Built locally, not distributed.
+Built locally, not distributed; a signed and notarized copy can be made to give to someone.
 
 ## What it does
 
@@ -52,6 +52,11 @@ xcodebuild -project out-of-space-swiftly/out-of-space-swiftly.xcodeproj -scheme 
 `Scripts/build.sh` makes a Release build stamped with the commit it came from; `Scripts/build.sh --install`
 also replaces `~/Applications/Out Of Space Swiftly.app` with it and launches it.
 
+`Scripts/release.sh` makes a copy to give to someone: archived from a clean commit, signed with a
+Developer ID, notarized by Apple and zipped, in `build/release/`. It takes the signing identity and a
+`notarytool` profile from the keychain; its header says how to set them up and how to choose an identity
+when several are installed.
+
 Debug builds can be driven from a shell (scan a folder, zoom, select, write a snapshot of the window and
 quit) through `OOSS_*` environment variables; see `Support/DebugAids.swift`.
 
@@ -74,6 +79,7 @@ Recorded as ADRs in [docs/adr](docs/adr):
 - [0004](docs/adr/0004-scanning.md) Scanning with our own getattrlistbulk walker
 - [0005](docs/adr/0005-treemap.md) Treemap: squarified layout, drawn with Canvas, colored by content
 - [0006](docs/adr/0006-blocking-calls.md) Calls that can block run on threads of their own
+- [0007](docs/adr/0007-signed-notarized-copies.md) Signed and notarized copies for sharing
 
 ## License
 
