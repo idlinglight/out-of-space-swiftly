@@ -15,7 +15,7 @@
 #
 # The app is uploaded to Apple's notary service, which usually answers within minutes. The archive (with
 # the dSYMs), the logs and Apple's notary log stay next to the zip. Before it reports success, the script
-# unpacks the zip and checks the copy inside as Gatekeeper would.
+# unpacks the zip with plain unzip and checks the copy inside as Gatekeeper would.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -23,6 +23,10 @@ project=out-of-space-swiftly/out-of-space-swiftly.xcodeproj
 scheme=out-of-space-swiftly
 
 fail() { print -u2 -- "$*"; exit 1; }
+
+# Without extended attributes: ditto would keep them in "._" files, which every unzip tool but Finder's
+# leaves in the bundle as extra files that break the signature. A signed app needs none of them.
+zip_app() { ditto -c -k --norsrc --noextattr --noacl --keepParent "$1" "$2"; }
 
 xcode_failed() {  # step, log
   print -u2 -- "$1 failed. Errors:"
@@ -116,7 +120,7 @@ stamped=$(plutil -extract OOSSCommit raw -o - "$app/Contents/Info.plist" 2>/dev/
 [[ "$stamped" == "$commit" ]] || fail "The app carries no stamp (got '$stamped')."
 
 echo "Notarizing (waiting for Apple's notary service)"
-ditto -c -k --keepParent "$app" "$out/upload.zip"
+zip_app "$app" "$out/upload.zip"
 xcrun notarytool submit "$out/upload.zip" --keychain-profile "$profile" --wait --timeout 1h \
   --output-format json > "$out/notary-submit.json" 2> "$out/notarytool.log" || true
 rm -f "$out/upload.zip"
@@ -134,12 +138,11 @@ fi
 echo "Stapling the ticket"
 xcrun stapler staple "$app" > "$out/stapler.log" 2>&1 || fail "Stapling failed: $(<"$out/stapler.log")"
 
-ditto -c -k --keepParent "$app" "$zip"
+zip_app "$app" "$zip"
 
 echo "Checking the copy in the zip"
 check=$out/check
-mkdir "$check"
-ditto -x -k "$zip" "$check"
+unzip -q "$zip" -d "$check"
 received=$check/$name.app
 xcrun stapler validate "$received" > /dev/null 2>&1 || fail "The app in the zip has no valid ticket."
 codesign --verify --deep --strict "$received" 2> "$out/codesign.log" \
