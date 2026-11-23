@@ -196,11 +196,11 @@ expect_notarized "$(spctl --assess --type open --context context:primary-signatu
 mount=$out/mount
 mkdir "$mount"
 trap 'hdiutil detach "$mount" -force > /dev/null 2>&1 || true' EXIT
-hdiutil attach "$base.dmg" -readonly -nobrowse -noautoopen -mountpoint "$mount" > /dev/null 2> "$out/hdiutil.log" \
+hdiutil attach "$base.dmg" -readonly -nobrowse -noautoopen -mountpoint "$mount" > /dev/null 2>> "$out/hdiutil.log" \
   || fail "Mounting the disk image failed: $(<"$out/hdiutil.log")"
 check_app "$mount/$name.app" "in the disk image"
 [[ "$(readlink "$mount/Applications")" == /Applications ]] || fail "The disk image lacks its link to /Applications."
-hdiutil detach "$mount" > /dev/null
+hdiutil detach "$mount" > /dev/null 2>> "$out/hdiutil.log" || fail "Detaching the disk image failed: $(<"$out/hdiutil.log")"
 trap - EXIT
 rmdir "$mount" 2>/dev/null || true
 
