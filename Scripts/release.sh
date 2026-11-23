@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Makes a copy of the app to give to others: a Release archive of the current commit, stamped as build.sh
+# Makes a build of the app for others to run: a Release archive of the current commit, stamped as build.sh
 # stamps it, signed with a Developer ID and notarized by Apple, as a disk image and as a zip:
 #
 #   Scripts/release.sh
@@ -176,8 +176,8 @@ zip_app "$app" "$base.zip"
 
 echo "Making the disk image"
 # hdiutil create, attach and detach print deprecation warnings on macOS 27 that point to `diskutil image`
-# and `diskutil eject`; their output goes to hdiutil.log. hdiutil stays until the replacement is known to
-# exist wherever the script runs.
+# and `diskutil eject`; their output goes to hdiutil.log. They still work, and the replacement does not
+# yet seem to do everything hdiutil does, so the switch waits until a macOS release drops them.
 staging=$out/dmg
 mkdir "$staging"
 ditto "$app" "$staging/$name.app"
