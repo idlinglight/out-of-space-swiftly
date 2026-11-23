@@ -3,7 +3,8 @@
 A macOS app that shows where the space on a disk went: it scans a folder or volume and draws the result
 as a treemap, natively, with Apple's frameworks and nothing else.
 
-No published builds yet; `Scripts/release.sh` makes a signed and notarized one (see below).
+Signed and notarized builds are on the [Releases](https://github.com/idlinglight/out-of-space-swiftly/releases)
+page: open the disk image and drag the app to Applications. It needs macOS 26 or later.
 
 ## What it does
 
@@ -57,11 +58,15 @@ Developer ID and notarized by Apple, as a disk image and a zip in `build/release
 identity and a `notarytool` profile from the keychain; its header says how to set them up and how to
 choose an identity when several are installed.
 
+Releases are made by GitHub Actions: a tag `v<version>` runs [release.yml](.github/workflows/release.yml),
+which runs the same script and drafts a GitHub release. [release.md](.github/workflows/release.md) says
+how to make one and what the workflow needs.
+
 Debug builds can be driven from a shell (scan a folder, zoom, select, write a snapshot of the window and
 quit) through `OOSS_*` environment variables; see `Support/DebugAids.swift`.
 
 Pull requests are built and tested by GitHub Actions ([ci.yml](.github/workflows/ci.yml)) on the hosted
-`xcode-27` runner, signed ad hoc since CI has no certificates.
+`xcode-27` runner, signed ad hoc: that workflow has no access to certificates.
 
 ## Scanning
 
@@ -79,7 +84,7 @@ Recorded as ADRs in [docs/adr](docs/adr):
 - [0004](docs/adr/0004-scanning.md) Scanning with our own getattrlistbulk walker
 - [0005](docs/adr/0005-treemap.md) Treemap: squarified layout, drawn with Canvas, colored by content
 - [0006](docs/adr/0006-blocking-calls.md) Calls that can block run on threads of their own
-- [0007](docs/adr/0007-signed-notarized-builds.md) Signed and notarized builds (provisional)
+- [0007](docs/adr/0007-signed-notarized-builds.md) Signed and notarized builds
 
 ## License
 

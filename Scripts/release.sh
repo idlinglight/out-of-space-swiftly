@@ -13,6 +13,8 @@
 #     xcrun notarytool store-credentials out-of-space-swiftly \
 #       --key AuthKey_<key id>.p8 --key-id <key id> --issuer <issuer id>
 #   Another name: OOSS_NOTARY_PROFILE=<name>, or once per clone `git config ooss.notaryProfile <name>`.
+#   The profile is looked up in the default keychains, or in the keychain at OOSS_NOTARY_KEYCHAIN if set.
+# GitHub Actions (.github/workflows/release.yml) puts both into a keychain of its own for the job.
 #
 # The app is notarized and its ticket stapled to it, so a copy taken out of the disk image or the zip
 # opens on its own, also offline. The disk image (the app and a link to /Applications) is signed,
@@ -42,12 +44,12 @@ zip_app() { ditto -c -k --norsrc --noextattr --noacl --keepParent "$1" "$2"; }
 # Uploads $1 to the notary service and waits for the verdict. Apple's log goes to notary-$2.json.
 notarize() {
   local submission verdict issues
-  xcrun notarytool submit "$1" --keychain-profile "$profile" --wait --timeout 1h \
+  xcrun notarytool submit "$1" "${notary[@]}" --wait --timeout 1h \
     --output-format json > "$out/notary-$2-submit.json" 2> "$out/notarytool.log" || true
   submission=$(jq -r '.id // empty' "$out/notary-$2-submit.json" 2>/dev/null || true)
   [[ -n "$submission" ]] || fail "The upload of $1 to the notary service failed: $(<"$out/notarytool.log")"
   verdict=$(jq -r '.status // empty' "$out/notary-$2-submit.json")
-  xcrun notarytool log "$submission" --keychain-profile "$profile" "$out/notary-$2.json" > /dev/null 2>&1 || true
+  xcrun notarytool log "$submission" "${notary[@]}" "$out/notary-$2.json" > /dev/null 2>&1 || true
   issues=$(jq -r '.issues[]? | "  \(.path // "-"): \(.message)"' "$out/notary-$2.json" 2>/dev/null || true)
   if [[ "$verdict" != Accepted ]]; then
     [[ -z "$issues" ]] || print -ru2 -- "$issues"
@@ -100,6 +102,8 @@ elif (( ! ${identities[(Ie)$identity]} )); then
   fail "$identity is not a valid Developer ID Application identity of team $team in the keychain."
 fi
 profile=${OOSS_NOTARY_PROFILE:-$(git config --get ooss.notaryProfile || echo out-of-space-swiftly)}
+notary=(--keychain-profile "$profile")
+[[ -z "${OOSS_NOTARY_KEYCHAIN:-}" ]] || notary+=(--keychain "$OOSS_NOTARY_KEYCHAIN")
 
 # The commit in the folder name keeps a release of another commit with the same build number (the same
 # commit count on another branch) from replacing this one.
@@ -120,7 +124,7 @@ git merge-base --is-ancestor HEAD origin/main 2>/dev/null \
   || echo "Note: $commit is not on origin/main (as last fetched), so the public repository may not have the commit this copy names."
 
 # Fail before the build, not after it, if the notary credentials do not work.
-xcrun notarytool history --keychain-profile "$profile" > /dev/null 2> "$out/notarytool.log" \
+xcrun notarytool history "${notary[@]}" > /dev/null 2> "$out/notarytool.log" \
   || fail "The notary profile '$profile' does not work: $(<"$out/notarytool.log")"
 
 echo "Archiving"
