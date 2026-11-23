@@ -3,7 +3,7 @@
 # stamps it, signed with a Developer ID and notarized by Apple, as a disk image and as a zip:
 #
 #   Scripts/release.sh
-#     -> build/release/<version>-<build>-<commit>/Out-Of-Space-Swiftly-<version>-<build>.dmg and .zip
+#     -> build/release/<version>-<build>-<commit>/Out-Of-Space-Swiftly-<version>.dmg and .zip
 #
 # It needs a clean working tree and two things in the keychain, neither of which is in the repository:
 # - A "Developer ID Application" identity of the project's team. With more than one installed, choose one
@@ -122,13 +122,14 @@ profile=${OOSS_NOTARY_PROFILE:-$(git config --get ooss.notaryProfile || echo out
 notary=(--keychain-profile "$profile")
 [[ -z "${OOSS_NOTARY_KEYCHAIN:-}" ]] || notary+=(--keychain "$OOSS_NOTARY_KEYCHAIN")
 
-# The commit in the folder name keeps a release of another commit with the same build number (the same
-# commit count on another branch) from replacing this one.
+# The folder names the build and the commit, so a release of another commit with the same build number
+# (the same commit count on another branch) does not replace this one. The files in it carry only the
+# version, as they are published.
 out=build/release/$version-$count-$commit
 archive=$out/$name.xcarchive
 exported=$out/export
 app=$exported/$name.app
-base=$out/${name// /-}-$version-$count
+base=$out/${name// /-}-$version
 mount=$out/mount
 detach_image() { hdiutil detach "$mount" -force > /dev/null 2>&1 || true; }
 [[ ! -d "$mount" ]] || detach_image  # left attached by an earlier run of this commit that was killed
